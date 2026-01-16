@@ -10,6 +10,7 @@ import com.example.hrms.attendance.repo.ImportBatchRepository;
 import com.example.hrms.attendance.repo.ImportErrorRepository;
 import com.example.hrms.attendance.service.AttendanceEngine;
 import com.example.hrms.attendance.service.AttendanceImportService;
+import com.example.hrms.tenant.TenantContext;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -47,10 +48,10 @@ public class AttendanceImportController {
             @RequestParam("file") MultipartFile file,
             @RequestParam("month") int month,
             @RequestParam("year") int year,
-            @RequestHeader(value = "X-Org-Id", required = false) Long orgId,
             @RequestHeader(value = "X-User", required = false) String uploadedBy) {
 
-        if (orgId == null) orgId = 1L;
+        // Use default orgId=1L for now (single tenant mode)
+        Long orgId = 1L;
         var result = importService.importLogsExcel(orgId, file, month, year, uploadedBy == null ? "admin" : uploadedBy);
 
         // If not a duplicate, rebuild the org month
@@ -65,10 +66,10 @@ public class AttendanceImportController {
      * Get list of all import batches for the organization.
      */
     @GetMapping("/import/batches")
-    public ResponseEntity<List<Map<String, Object>>> listBatches(
-            @RequestHeader(value = "X-Org-Id", required = false) Long orgId) {
+    public ResponseEntity<List<Map<String, Object>>> listBatches() {
 
-        if (orgId == null) orgId = 1L;
+        // Use default orgId=1L for now (single tenant mode)
+        Long orgId = 1L;
         List<ImportBatch> batches = batchRepo.findByOrgIdOrderByUploadedAtDesc(orgId);
 
         List<Map<String, Object>> result = batches.stream().map(b -> {
@@ -93,10 +94,10 @@ public class AttendanceImportController {
     @GetMapping("/import/check")
     public ResponseEntity<Map<String, Object>> checkDuplicate(
             @RequestParam("month") int month,
-            @RequestParam("year") int year,
-            @RequestHeader(value = "X-Org-Id", required = false) Long orgId) {
+            @RequestParam("year") int year) {
 
-        if (orgId == null) orgId = 1L;
+        // Use default orgId=1L for now (single tenant mode)
+        Long orgId = 1L;
         List<ImportBatch> existing = batchRepo.findByOrgIdAndMonthAndYear(orgId, month, year);
 
         Map<String, Object> result = new HashMap<>();
@@ -117,13 +118,13 @@ public class AttendanceImportController {
     @DeleteMapping("/import/batches/{batchId}")
     @Transactional
     public ResponseEntity<Map<String, Object>> deleteBatch(
-            @PathVariable Long batchId,
-            @RequestHeader(value = "X-Org-Id", required = false) Long orgId) {
+            @PathVariable Long batchId) {
 
-        if (orgId == null) orgId = 1L;
+        // Use default orgId=1L for now (single tenant mode)
+        Long orgId = 1L;
 
         ImportBatch batch = batchRepo.findById(batchId).orElse(null);
-        if (batch == null || !batch.getOrgId().equals(orgId)) {
+        if (batch == null || !orgId.equals(batch.getOrgId())) {
             return ResponseEntity.notFound().build();
         }
 
@@ -186,10 +187,10 @@ public class AttendanceImportController {
     @Transactional
     public ResponseEntity<Map<String, Object>> recalculateAttendance(
             @RequestParam("month") int month,
-            @RequestParam("year") int year,
-            @RequestHeader(value = "X-Org-Id", required = false) Long orgId) {
+            @RequestParam("year") int year) {
 
-        if (orgId == null) orgId = 1L;
+        // Use default orgId=1L for now (single tenant mode)
+        Long orgId = 1L;
         YearMonth ym = YearMonth.of(year, month);
 
         // Delete existing computed data

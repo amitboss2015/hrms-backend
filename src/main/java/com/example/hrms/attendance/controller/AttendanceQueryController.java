@@ -9,6 +9,7 @@ import com.example.hrms.attendance.service.AttendanceQueryService;
 import com.example.hrms.attendance.service.AttendanceSummaryService;
 import com.example.hrms.domain.Employee;
 import com.example.hrms.repo.EmployeeRepository;
+import com.example.hrms.tenant.TenantContext;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -42,10 +43,10 @@ public class AttendanceQueryController {
             @RequestParam int month, 
             @RequestParam int year,
             @RequestParam(required = false) Long empId,
-            @RequestParam(required = false) String empCode,
-            @RequestHeader(value = "X-Org-Id", required = false) Long orgId) {
+            @RequestParam(required = false) String empCode) {
 
-        if (orgId == null) orgId = 1L;
+        // Use default orgId=1L for now (single tenant mode)
+        Long orgId = 1L;
         return ResponseEntity.ok(service.getEmployeeLogs(orgId, empId, empCode, month, year));
     }
 
@@ -56,10 +57,10 @@ public class AttendanceQueryController {
     @GetMapping("/summary")
     public ResponseEntity<List<MonthlySummaryDTO>> summary(
             @RequestParam int month,
-            @RequestParam int year,
-            @RequestHeader(value = "X-Org-Id", required = false) Long orgId) {
+            @RequestParam int year) {
         
-        if (orgId == null) orgId = 1L;
+        // Use default orgId=1L for now (single tenant mode)
+        Long orgId = 1L;
         return ResponseEntity.ok(summaryService.getSummary(year, month, orgId));
     }
 
@@ -67,10 +68,10 @@ public class AttendanceQueryController {
      * Get list of all employees for the dropdown.
      */
     @GetMapping("/employees")
-    public ResponseEntity<List<Map<String, Object>>> getEmployees(
-            @RequestHeader(value = "X-Org-Id", required = false) Long orgId) {
+    public ResponseEntity<List<Map<String, Object>>> getEmployees() {
         
-        List<Employee> employees = employeeRepository.findAll();
+        String tenantId = TenantContext.getTenantIdOrDefault("SASA001");
+        List<Employee> employees = employeeRepository.findByTenantId(tenantId);
         List<Map<String, Object>> result = employees.stream().map(e -> {
             Map<String, Object> map = new HashMap<>();
             map.put("id", e.getId());
@@ -90,10 +91,10 @@ public class AttendanceQueryController {
     @GetMapping("/summary1")
     public ResponseEntity<List<SummaryRowDTO>> summary1(
             @RequestParam int month, 
-            @RequestParam int year,
-            @RequestHeader(value = "X-Org-Id", required = false) Long orgId) {
+            @RequestParam int year) {
 
-        if (orgId == null) orgId = 1L;
+        // Use default orgId=1L for now (single tenant mode)
+        Long orgId = 1L;
         return ResponseEntity.ok(service.getMonthlySummary(orgId, month, year));
     }
 
@@ -185,10 +186,9 @@ public class AttendanceQueryController {
     @GetMapping("/needs-review")
     public ResponseEntity<List<Map<String, Object>>> getAttendanceNeedingReview(
             @RequestParam int month,
-            @RequestParam int year,
-            @RequestHeader(value = "X-Org-Id", required = false) Long orgId) {
+            @RequestParam int year) {
         
-        if (orgId == null) orgId = 1L;
+        String tenantId = TenantContext.getTenantIdOrDefault("SASA001");
         
         LocalDate startDate = LocalDate.of(year, month, 1);
         LocalDate endDate = startDate.withDayOfMonth(startDate.lengthOfMonth());
