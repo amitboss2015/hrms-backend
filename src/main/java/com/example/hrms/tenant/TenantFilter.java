@@ -39,6 +39,7 @@ public class TenantFilter extends OncePerRequestFilter {
         "/api/tenants",        // Tenant management endpoints
         "/api/health",         // Health check
         "/api/public",         // Public endpoints
+        "/api/auth",           // Auth endpoints
         "/actuator",           // Spring actuator
         "/swagger",            // Swagger docs
         "/v3/api-docs"         // OpenAPI docs
@@ -70,9 +71,9 @@ public class TenantFilter extends OncePerRequestFilter {
                 TenantContext.setTenantId(tenantId);
                 log.debug("Tenant resolved: {}", tenantId);
             } else {
-                // For development, use default tenant
-                TenantContext.setTenantId("ORG001");
-                log.debug("Using default tenant: ORG001");
+                // For development, use default tenant (Sasa Collection)
+                TenantContext.setTenantId("SASA001");
+                log.debug("Using default tenant: SASA001");
             }
             
             filterChain.doFilter(request, response);
@@ -157,8 +158,8 @@ public class TenantFilter extends OncePerRequestFilter {
      * Validate tenant ID exists and is active
      */
     private String validateTenant(String tenantId) {
-        // For development, accept ORG001 without DB check
-        if ("ORG001".equals(tenantId)) {
+        // For development, accept SASA001 without DB check
+        if ("SASA001".equals(tenantId)) {
             return tenantId;
         }
         

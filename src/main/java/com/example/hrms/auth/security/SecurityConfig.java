@@ -22,6 +22,8 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
+import lombok.extern.slf4j.Slf4j;
+
 import java.util.Arrays;
 import java.util.List;
 
@@ -32,6 +34,7 @@ import java.util.List;
 @EnableWebSecurity
 @EnableMethodSecurity(prePostEnabled = true)
 @RequiredArgsConstructor
+@Slf4j
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
@@ -79,6 +82,30 @@ public class SecurityConfig {
                 // Payroll - ADMIN, HR_MANAGER, ACCOUNTANT
                 .requestMatchers("/api/payroll/**").hasAnyRole("SUPER_ADMIN", "ADMIN", "HR_MANAGER", "ACCOUNTANT")
                 
+                // Configuration - all authenticated users (role check at method level if needed)
+                .requestMatchers("/api/config/**").authenticated()
+                
+                // Attendance - all authenticated users
+                .requestMatchers("/api/attendance/**").authenticated()
+                
+                // Employees - all authenticated users
+                .requestMatchers("/api/employees/**").authenticated()
+                
+                // Shifts - all authenticated users  
+                .requestMatchers("/api/shifts/**").authenticated()
+                
+                // Leaves - all authenticated users
+                .requestMatchers("/api/leaves/**").authenticated()
+                
+                // Loans - ADMIN, HR_MANAGER, ACCOUNTANT
+                .requestMatchers("/api/loans/**").hasAnyRole("SUPER_ADMIN", "ADMIN", "HR_MANAGER", "ACCOUNTANT")
+                
+                // Holidays - all authenticated users
+                .requestMatchers("/api/holidays/**").authenticated()
+                
+                // Reports - ADMIN, HR_MANAGER
+                .requestMatchers("/api/reports/**").hasAnyRole("SUPER_ADMIN", "ADMIN", "HR_MANAGER")
+                
                 // Everything else requires authentication
                 .anyRequest().authenticated()
             )
@@ -111,11 +138,12 @@ public class SecurityConfig {
         CorsConfiguration configuration = new CorsConfiguration();
         
         // Allow specific origins (update for production)
-        configuration.setAllowedOrigins(Arrays.asList(
-            "http://localhost:3000",
-            "http://localhost:5173",
-            "http://localhost:5174",
-            "https://*.hrms.in"  // Production subdomains
+        configuration.setAllowedOriginPatterns(Arrays.asList(
+            "http://localhost:*",
+            "http://127.0.0.1:*",
+            "http://192.168.*.*:*",      // Local network
+            "http://104.30.163.123:*",   // Your public IP
+            "https://*.hrms.in"          // Production subdomains
         ));
         
         configuration.setAllowedMethods(Arrays.asList(
@@ -126,9 +154,12 @@ public class SecurityConfig {
             "Authorization",
             "Content-Type",
             "X-Tenant-Id",
+            "X-Org-Id",         // Legacy header for backward compatibility
+            "X-User",           // For manual punch operations
             "X-Requested-With",
             "Accept",
-            "Origin"
+            "Origin",
+            "Cache-Control"
         ));
         
         configuration.setExposedHeaders(Arrays.asList(
