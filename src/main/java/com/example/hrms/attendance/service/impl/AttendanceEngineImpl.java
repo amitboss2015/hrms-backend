@@ -23,6 +23,8 @@ import com.example.hrms.repo.EmployeeRepository;
 import com.example.hrms.repo.EmployeeShiftAssignmentRepository;
 import com.example.hrms.repo.HolidayRepository;
 import com.example.hrms.repo.WeeklyOffConfigRepository;
+import com.example.hrms.payroll.domain.SalaryOvertimeConfig;
+import com.example.hrms.payroll.service.SalaryOvertimeConfigService;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -47,12 +49,12 @@ public class AttendanceEngineImpl implements AttendanceEngine {
     private final EmployeeRepository employeeRepo;
     private final WeeklyOffConfigRepository weeklyOffConfigRepo;
     private final HolidayRepository holidayRepo;
+    private final SalaryOvertimeConfigService configService;
 
     private static final ZoneId ORG_TZ = ZoneId.of("Asia/Kolkata");
     private static final int BOUNDARY_FLOOR_MIN = 120; // at least 2h cross-midnight fetch
     private static final Duration SEGMENT_GAP = Duration.ofMinutes(60); // merge punches up to 60m apart
     private static final Duration MIN_SESSION = Duration.ofMinutes(5); // ignore <5m slices
-    private static final int HALF_DAY_THRESHOLD_MINS = 240; // 4 hours = half day
 
     @Override
     @Transactional
@@ -382,6 +384,12 @@ public class AttendanceEngineImpl implements AttendanceEngine {
             }
         }
         
+        // Get configurable thresholds
+        SalaryOvertimeConfig config = configService.getConfig();
+        int halfDayThresholdMins = config.getHalfDayMinHours() * 60; // Convert hours to minutes
+        int fullDayThresholdMins = config.getFullDayMinHours() * 60;
+        int otMinThresholdMins = config.getOvertimeMinThresholdMins();
+        
         // Determine status - if missing punch and has morning IN, treat as PRESENT (pending review)
         String status;
         if (isOvertimeDay) {
@@ -397,7 +405,7 @@ public class AttendanceEngineImpl implements AttendanceEngine {
             }
         } else if (dayWorkTotal == 0) {
             status = "ABSENT";
-        } else if (dayWorkTotal < HALF_DAY_THRESHOLD_MINS) {
+        } else if (dayWorkTotal < halfDayThresholdMins) {
             status = "HALF_DAY";
         } else {
             status = "PRESENT";

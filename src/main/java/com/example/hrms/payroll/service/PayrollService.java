@@ -7,6 +7,7 @@ import com.example.hrms.domain.Holiday;
 import com.example.hrms.domain.WeeklyOffConfig;
 import com.example.hrms.loan.service.LoanService;
 import com.example.hrms.payroll.domain.Payroll;
+import com.example.hrms.payroll.domain.SalaryOvertimeConfig;
 import com.example.hrms.payroll.domain.enums.PaymentMode;
 import com.example.hrms.payroll.domain.enums.PayrollStatus;
 import com.example.hrms.payroll.repo.PayrollRepository;
@@ -46,25 +47,26 @@ public class PayrollService {
     private final HolidayRepository holidayRepo;
     private final WeeklyOffConfigRepository weeklyOffRepo;
     private final LoanService loanService;
+    private final SalaryOvertimeConfigService configService;
 
     // Standard deduction rates matching payment sheet
     private static final BigDecimal ESI_RATE = new BigDecimal("0.0075");  // 0.75%
     private static final BigDecimal PF_RATE = new BigDecimal("0.06");     // 6%
-    private static final int STANDARD_HOURS_PER_DAY = 8;
-    private static final int LATE_TO_ABSENT_COUNT = 3;
 
     public PayrollService(PayrollRepository payrollRepo,
                           EmployeeRepository employeeRepo,
                           AttendanceDayRepository attendanceDayRepo,
                           HolidayRepository holidayRepo,
                           WeeklyOffConfigRepository weeklyOffRepo,
-                          LoanService loanService) {
+                          LoanService loanService,
+                          SalaryOvertimeConfigService configService) {
         this.payrollRepo = payrollRepo;
         this.employeeRepo = employeeRepo;
         this.attendanceDayRepo = attendanceDayRepo;
         this.holidayRepo = holidayRepo;
         this.weeklyOffRepo = weeklyOffRepo;
         this.loanService = loanService;
+        this.configService = configService;
     }
 
     /**
@@ -195,11 +197,17 @@ public class PayrollService {
                             lateDays++;
                         }
                         
-                        // Check for OT on working day (hours > standard)
+                        // Check for OT on working day using configurable thresholds
                         if (ad.getTotalWorkMin() != null) {
-                            int standardMins = STANDARD_HOURS_PER_DAY * 60;
-                            if (ad.getTotalWorkMin() > standardMins) {
-                                BigDecimal otMins = BigDecimal.valueOf(ad.getTotalWorkMin() - standardMins);
+                            SalaryOvertimeConfig otConfig = configService.getConfig();
+                            int standardMins = otConfig.getStandardWorkingHoursPerDay() * 60;
+                            int otMinThreshold = otConfig.getOvertimeMinThresholdMins();
+                            int extraMins = ad.getTotalWorkMin() - standardMins;
+                            
+                            // Only count as OT if extra minutes exceed the minimum threshold
+                            // e.g., if threshold is 30 mins, working 29 mins extra = no OT
+                            if (extraMins >= otMinThreshold && otConfig.getOvertimeEnabled()) {
+                                BigDecimal otMins = BigDecimal.valueOf(extraMins);
                                 totalOvertimeHours = totalOvertimeHours.add(
                                         otMins.divide(BigDecimal.valueOf(60), 2, RoundingMode.HALF_UP));
                             }
@@ -218,8 +226,10 @@ public class PayrollService {
             date = date.plusDays(1);
         }
 
-        // Calculate late deduction days (3 lates = 1 absent)
-        int lateDeductionDays = lateDays / LATE_TO_ABSENT_COUNT;
+        // Calculate late deduction days (configurable: X lates = 1 absent)
+        SalaryOvertimeConfig config = configService.getConfig();
+        int lateToAbsentCount = config.getLateArrivalsPerAbsent();
+        int lateDeductionDays = lateToAbsentCount > 0 ? lateDays / lateToAbsentCount : 0;
 
         payroll.setTotalWorkingDays(totalWorkingDays);
         payroll.setPresentDays(presentDays);
@@ -236,40 +246,72 @@ public class PayrollService {
     }
 
     /**
-     * Calculate earnings based on payment sheet formula
+     * Calculate earnings based on payment sheet formula with configurable rules.
+     * 
+     * Uses SalaryOvertimeConfig for:
+     * - Full month salary threshold (e.g., 28 days worked = full 30 day salary)
+     * - OT multipliers (regular, weekend, holiday)
+     * - Days in month for calculation (typically 30)
+     * - Standard working hours per day
      */
     private void calculateEarnings(Payroll payroll, Employee emp) {
+        // Get configuration for the tenant
+        SalaryOvertimeConfig config = configService.getConfig();
+        
         BigDecimal finalPayment = payroll.getFinalPayment();
-        int workingDays = payroll.getTotalWorkingDays() != null ? payroll.getTotalWorkingDays() : 28;
-        
-        if (workingDays == 0) workingDays = 28; // Fallback
-
-        // Per day rate = FINAL PAYMENT / WORKING DAYS
-        BigDecimal perDayRate = finalPayment.divide(BigDecimal.valueOf(workingDays), 4, RoundingMode.HALF_UP);
-        
-        // Per hour rate = Per day rate / 8
-        BigDecimal perHourRate = perDayRate.divide(BigDecimal.valueOf(STANDARD_HOURS_PER_DAY), 4, RoundingMode.HALF_UP);
-
-        // Calculate payable days (present + half days * 0.5)
+        int actualWorkingDays = payroll.getTotalWorkingDays() != null ? payroll.getTotalWorkingDays() : 28;
         int presentDays = payroll.getPresentDays() != null ? payroll.getPresentDays() : 0;
         int halfDays = payroll.getHalfDays() != null ? payroll.getHalfDays() : 0;
         
-        // If present days exceed working days (due to OT on weekly offs), cap at working days for base calculation
+        if (actualWorkingDays == 0) actualWorkingDays = 28; // Fallback
+        
+        // Get configured values
+        int salaryDaysInMonth = config.getSalaryCalculationDaysInMonth(); // e.g., 30
+        int fullMonthThreshold = config.getFullMonthSalaryThresholdDays(); // e.g., 28
+        int standardHoursPerDay = config.getStandardWorkingHoursPerDay(); // e.g., 8
+        boolean thresholdEnabled = config.getEnableFullMonthSalaryThreshold();
+
+        // Calculate payable days (present + half days * 0.5)
         BigDecimal payableDays = BigDecimal.valueOf(presentDays)
                 .add(BigDecimal.valueOf(halfDays).multiply(new BigDecimal("0.5")));
 
-        // WORKING DAY AMOUNT = Per day rate * Present days
-        BigDecimal workingDayAmount = perDayRate.multiply(payableDays).setScale(0, RoundingMode.HALF_UP);
+        // Apply full month salary threshold logic:
+        // If employee worked >= threshold days, they get full month salary
+        BigDecimal effectiveDays;
+        if (thresholdEnabled && presentDays >= fullMonthThreshold) {
+            // Employee qualifies for full month salary
+            effectiveDays = BigDecimal.valueOf(salaryDaysInMonth);
+        } else {
+            // Pay based on actual days worked
+            effectiveDays = payableDays;
+        }
+
+        // Per day rate = FINAL PAYMENT / DAYS IN MONTH (configurable, typically 30)
+        BigDecimal perDayRate = finalPayment.divide(BigDecimal.valueOf(salaryDaysInMonth), 4, RoundingMode.HALF_UP);
+        
+        // Per hour rate = Per day rate / STANDARD HOURS (configurable, typically 8)
+        BigDecimal perHourRate = perDayRate.divide(BigDecimal.valueOf(standardHoursPerDay), 4, RoundingMode.HALF_UP);
+
+        // WORKING DAY AMOUNT = Per day rate * Effective days
+        BigDecimal workingDayAmount = perDayRate.multiply(effectiveDays).setScale(0, RoundingMode.HALF_UP);
         payroll.setWorkingDayAmount(workingDayAmount);
 
-        // OT DAY AMOUNT = Per day rate * OT days (for full day OT on holidays/weekends)
+        // OT DAY AMOUNT = Per day rate * OT days * Multiplier (for full day OT on holidays/weekends)
         int otDays = payroll.getOvertimeDays() != null ? payroll.getOvertimeDays() : 0;
-        BigDecimal otDayAmount = perDayRate.multiply(BigDecimal.valueOf(otDays)).setScale(0, RoundingMode.HALF_UP);
+        BigDecimal weekendMultiplier = config.getWeekendOvertimeMultiplier();
+        BigDecimal otDayAmount = perDayRate
+                .multiply(BigDecimal.valueOf(otDays))
+                .multiply(weekendMultiplier) // Apply OT multiplier
+                .setScale(0, RoundingMode.HALF_UP);
         payroll.setOvertimeDayAmount(otDayAmount);
 
-        // OT HR AMOUNT = Per hour rate * OT hours (for extra hours)
+        // OT HR AMOUNT = Per hour rate * OT hours * Multiplier (for extra hours on working days)
         BigDecimal otHours = payroll.getOvertimeHours() != null ? payroll.getOvertimeHours() : BigDecimal.ZERO;
-        BigDecimal otHourAmount = perHourRate.multiply(otHours).setScale(0, RoundingMode.HALF_UP);
+        BigDecimal regularMultiplier = config.getRegularOvertimeMultiplier();
+        BigDecimal otHourAmount = perHourRate
+                .multiply(otHours)
+                .multiply(regularMultiplier)
+                .setScale(0, RoundingMode.HALF_UP);
         payroll.setOvertimeHourAmount(otHourAmount);
 
         // Set allowances from employee master
