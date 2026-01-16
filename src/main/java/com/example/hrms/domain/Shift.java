@@ -7,14 +7,21 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 
 @Entity
-@Table(name = "shifts")
+@Table(name = "shifts", indexes = {
+    @Index(name = "idx_shift_tenant_code", columnList = "tenantId, code", unique = true),
+    @Index(name = "idx_shift_tenant", columnList = "tenantId")
+})
 public class Shift {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(nullable = false, unique = true)
+    // Multi-tenancy support
+    @Column(nullable = false, length = 50)
+    private String tenantId = "ORG001";
+
+    @Column(nullable = false)
     private String code;
 
     @Column(nullable = false)
@@ -66,6 +73,14 @@ public class Shift {
 
     public void setId(Long id) {
         this.id = id;
+    }
+
+    public String getTenantId() {
+        return tenantId;
+    }
+
+    public void setTenantId(String tenantId) {
+        this.tenantId = tenantId;
     }
 
     public String getCode() {

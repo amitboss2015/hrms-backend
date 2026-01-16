@@ -6,12 +6,14 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 
 @Entity
-@Table(name = "employee_leave")
+@Table(name = "employee_leave",
+       indexes = @Index(name = "idx_empleave_tenant", columnList = "tenantId"))
 public class EmployeeLeave {
   @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
   private Long id;
 
-  @Column(nullable = false) private String orgId;
+  // Multi-tenancy support (replaces orgId)
+  @Column(nullable = false, length = 50) private String tenantId;
   @Column(nullable = false) private String empId;
 
   @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "leave_type_id", nullable = false)
@@ -38,8 +40,11 @@ public class EmployeeLeave {
   // Getters/Setters
   public Long getId() { return id; }
   public void setId(Long id) { this.id = id; }
-  public String getOrgId() { return orgId; }
-  public void setOrgId(String orgId) { this.orgId = orgId; }
+  public String getTenantId() { return tenantId; }
+  public void setTenantId(String tenantId) { this.tenantId = tenantId; }
+  // Backward compatibility
+  public String getOrgId() { return tenantId; }
+  public void setOrgId(String orgId) { this.tenantId = orgId; }
   public String getEmpId() { return empId; }
   public void setEmpId(String empId) { this.empId = empId; }
   public LeaveType getLeaveType() { return leaveType; }

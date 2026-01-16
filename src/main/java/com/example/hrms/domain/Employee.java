@@ -7,12 +7,20 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 
 @Entity
-@Table(name = "employees", indexes = @Index(name = "idx_emp_code", columnList = "empCode", unique = true))
+@Table(name = "employees", indexes = {
+    @Index(name = "idx_emp_code", columnList = "empCode"),
+    @Index(name = "idx_tenant_emp", columnList = "tenantId, empCode", unique = true),
+    @Index(name = "idx_tenant_status", columnList = "tenantId, status")
+})
 public class Employee {
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @NotBlank @Column(nullable = false, unique = true)
+    // Multi-tenancy support
+    @Column(nullable = false, length = 50)
+    private String tenantId = "ORG001";
+
+    @NotBlank @Column(nullable = false)
     private String empCode;
 
     private String firstName;
@@ -76,6 +84,7 @@ public class Employee {
 
     // getters/setters
     public Long getId() { return id; } public void setId(Long id) { this.id = id; }
+    public String getTenantId() { return tenantId; } public void setTenantId(String tenantId) { this.tenantId = tenantId; }
     public String getEmpCode() { return empCode; } public void setEmpCode(String empCode) { this.empCode = empCode; }
     public String getFirstName() { return firstName; } public void setFirstName(String firstName) { this.firstName = firstName; }
     public String getLastName() { return lastName; } public void setLastName(String lastName) { this.lastName = lastName; }

@@ -13,6 +13,7 @@ import com.example.hrms.payroll.repo.PayrollRepository;
 import com.example.hrms.repo.EmployeeRepository;
 import com.example.hrms.repo.HolidayRepository;
 import com.example.hrms.repo.WeeklyOffConfigRepository;
+import com.example.hrms.tenant.TenantContext;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 

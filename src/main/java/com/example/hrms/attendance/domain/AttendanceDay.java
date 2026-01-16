@@ -7,12 +7,21 @@ import java.time.*;
 
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 @Entity @Table(name="attendance_day",
-    indexes = @Index(name="idx_day_emp_date", columnList="employeeId, workDate"))
+    indexes = {
+        @Index(name="idx_day_emp_date", columnList="employeeId, workDate"),
+        @Index(name="idx_day_tenant", columnList="tenantId"),
+        @Index(name="idx_day_tenant_date", columnList="tenantId, workDate")
+    })
 public class AttendanceDay implements Serializable {
 
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    // Multi-tenancy support (replaces orgId)
+    @Column(length = 50)
+    private String tenantId;
+    
+    @Deprecated // Use tenantId instead
     private Long orgId;
     private Long employeeId;
     private LocalDate workDate;

@@ -11,15 +11,17 @@ import java.time.DayOfWeek;
  */
 @Entity
 @Table(name = "weekly_off_config",
-       uniqueConstraints = @UniqueConstraint(columnNames = {"orgId", "employmentType"}))
+       uniqueConstraints = @UniqueConstraint(columnNames = {"tenantId", "employmentType"}),
+       indexes = @Index(name = "idx_weeklyoff_tenant", columnList = "tenantId"))
 public class WeeklyOffConfig {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(nullable = false)
-    private String orgId;
+    // Multi-tenancy support (replaces orgId)
+    @Column(nullable = false, length = 50)
+    private String tenantId = "ORG001";
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
@@ -40,8 +42,11 @@ public class WeeklyOffConfig {
     // Getters and Setters
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
-    public String getOrgId() { return orgId; }
-    public void setOrgId(String orgId) { this.orgId = orgId; }
+    public String getTenantId() { return tenantId; }
+    public void setTenantId(String tenantId) { this.tenantId = tenantId; }
+    // Backward compatibility aliases
+    public String getOrgId() { return tenantId; }
+    public void setOrgId(String orgId) { this.tenantId = orgId; }
     public EmploymentType getEmploymentType() { return employmentType; }
     public void setEmploymentType(EmploymentType employmentType) { this.employmentType = employmentType; }
     public String getWeeklyOffDays() { return weeklyOffDays; }

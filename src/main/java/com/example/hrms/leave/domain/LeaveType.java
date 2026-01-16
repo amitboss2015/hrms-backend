@@ -7,12 +7,15 @@ import java.math.BigDecimal;
 
 @JsonIgnoreProperties({"hibernateLazyInitializer","handler"})
 @Entity
-@Table(name = "leave_type", uniqueConstraints = @UniqueConstraint(columnNames = {"orgId", "code"}))
+@Table(name = "leave_type", 
+       uniqueConstraints = @UniqueConstraint(columnNames = {"tenantId", "code"}),
+       indexes = @Index(name = "idx_leavetype_tenant", columnList = "tenantId"))
 public class LeaveType {
   @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
   private Long id;
 
-  @Column(nullable = false) private String orgId;
+  // Multi-tenancy support (replaces orgId)
+  @Column(nullable = false, length = 50) private String tenantId;
   @Column(nullable = false) private String code; // EL, CL, SL, UCL, WEEKLY_OFF
   @Column(nullable = false) private String name;
   @Column(nullable = false) private Boolean isPaid = Boolean.TRUE;
@@ -42,8 +45,11 @@ public class LeaveType {
   // Getters/Setters
   public Long getId() { return id; }
   public void setId(Long id) { this.id = id; }
-  public String getOrgId() { return orgId; }
-  public void setOrgId(String orgId) { this.orgId = orgId; }
+  public String getTenantId() { return tenantId; }
+  public void setTenantId(String tenantId) { this.tenantId = tenantId; }
+  // Backward compatibility
+  public String getOrgId() { return tenantId; }
+  public void setOrgId(String orgId) { this.tenantId = orgId; }
   public String getCode() { return code; }
   public void setCode(String code) { this.code = code; }
   public String getName() { return name; }
