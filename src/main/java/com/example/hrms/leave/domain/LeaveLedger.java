@@ -6,12 +6,15 @@ import java.math.BigDecimal;
 
 @Entity
 @Table(name = "leave_ledger",
-       uniqueConstraints = @UniqueConstraint(columnNames = {"orgId","empId","leave_type_id","leaveYear","leaveMonth"}))
+       uniqueConstraints = @UniqueConstraint(columnNames = {"tenant_id","empId","leave_type_id","leaveYear","leaveMonth"}),
+       indexes = @Index(name = "idx_ledger_tenant", columnList = "tenant_id"))
 public class LeaveLedger {
   @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
   private Long id;
 
-  @Column(nullable = false) private String orgId;
+  @Column(name = "tenant_id", nullable = false, length = 50) 
+  private String tenantId;
+  
   @Column(nullable = false) private String empId;
 
   @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "leave_type_id", nullable = false)
@@ -35,8 +38,11 @@ public class LeaveLedger {
   // Getters/Setters
   public Long getId() { return id; }
   public void setId(Long id) { this.id = id; }
-  public String getOrgId() { return orgId; }
-  public void setOrgId(String orgId) { this.orgId = orgId; }
+  public String getTenantId() { return tenantId; }
+  public void setTenantId(String tenantId) { this.tenantId = tenantId; }
+  // Backward compatibility
+  public String getOrgId() { return tenantId; }
+  public void setOrgId(String orgId) { this.tenantId = orgId; }
   public String getEmpId() { return empId; }
   public void setEmpId(String empId) { this.empId = empId; }
   public LeaveType getLeaveType() { return leaveType; }

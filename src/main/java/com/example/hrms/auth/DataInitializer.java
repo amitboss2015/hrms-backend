@@ -15,13 +15,19 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 /**
- * Initializes default users and tenant on application startup
+ * Initializes default users and tenant on application startup.
+ * 
+ * Default tenant: SASA001 (Sasa Collection Pvt Ltd)
  */
 @Component
 @RequiredArgsConstructor
 @Slf4j
 public class DataInitializer implements CommandLineRunner {
 
+    private static final String DEFAULT_TENANT_ID = "SASA001";
+    private static final String DEFAULT_TENANT_NAME = "Sasa Collection Pvt Ltd";
+    private static final String DEFAULT_SUBDOMAIN = "sasacollection";
+    
     private final UserRepository userRepository;
     private final TenantRepository tenantRepository;
     private final PasswordEncoder passwordEncoder;
@@ -33,26 +39,33 @@ public class DataInitializer implements CommandLineRunner {
     }
 
     private void initializeDefaultTenant() {
-        if (!tenantRepository.existsById("ORG001")) {
+        if (!tenantRepository.existsById(DEFAULT_TENANT_ID)) {
             Tenant tenant = Tenant.builder()
-                    .id("ORG001")
-                    .name("Default Organization")
-                    .subdomain("default")
-                    .email("admin@hrms.in")
+                    .id(DEFAULT_TENANT_ID)
+                    .name(DEFAULT_TENANT_NAME)
+                    .subdomain(DEFAULT_SUBDOMAIN)
+                    .email("hr@sasacollection.com")
+                    .city("Mumbai")
+                    .state("Maharashtra")
+                    .country("India")
                     .plan("ENTERPRISE")
                     .maxEmployees(10000)
                     .isActive(true)
                     .subscriptionStart(LocalDate.now())
+                    .primaryColor("#6366F1")
+                    .currency("INR")
+                    .dateFormat("dd/MM/yyyy")
+                    .timezone("Asia/Kolkata")
                     .build();
             tenantRepository.save(tenant);
-            log.info("✅ Created default tenant: ORG001");
+            log.info("✅ Created default tenant: {} ({})", DEFAULT_TENANT_NAME, DEFAULT_TENANT_ID);
         }
     }
 
     private void initializeDefaultUsers() {
-        // Super Admin
+        // Super Admin - for system-level access
         createUserIfNotExists(
-            "ORG001",
+            DEFAULT_TENANT_ID,
             "superadmin@hrms.in",
             "SuperAdmin@123",
             "Super",
@@ -60,21 +73,21 @@ public class DataInitializer implements CommandLineRunner {
             UserRole.SUPER_ADMIN
         );
 
-        // Admin
+        // Sasa Collection Admin
         createUserIfNotExists(
-            "ORG001",
-            "admin@hrms.in",
-            "Admin@123",
+            DEFAULT_TENANT_ID,
+            "admin@sasacollection.com",
+            "admin@123",
+            "Sasa",
             "Admin",
-            "User",
             UserRole.ADMIN
         );
 
         // HR Manager
         createUserIfNotExists(
-            "ORG001",
-            "hr@hrms.in",
-            "HrManager@123",
+            DEFAULT_TENANT_ID,
+            "hr@sasacollection.com",
+            "hr@123",
             "HR",
             "Manager",
             UserRole.HR_MANAGER
@@ -82,10 +95,10 @@ public class DataInitializer implements CommandLineRunner {
 
         // Accountant
         createUserIfNotExists(
-            "ORG001",
-            "accountant@hrms.in",
-            "Accountant@123",
-            "Finance",
+            DEFAULT_TENANT_ID,
+            "accounts@sasacollection.com",
+            "accounts@123",
+            "Accounts",
             "Manager",
             UserRole.ACCOUNTANT
         );
@@ -93,7 +106,8 @@ public class DataInitializer implements CommandLineRunner {
 
     private void createUserIfNotExists(String tenantId, String email, String password,
                                         String firstName, String lastName, UserRole role) {
-        if (!userRepository.existsByTenantIdAndEmail(tenantId, email)) {
+        // Check if user exists by email only (ignoring tenant for global uniqueness)
+        if (!userRepository.existsByEmail(email)) {
             User user = User.builder()
                     .tenantId(tenantId)
                     .email(email)
@@ -104,10 +118,11 @@ public class DataInitializer implements CommandLineRunner {
                     .isActive(true)
                     .isLocked(false)
                     .failedAttempts(0)
+                    .mfaEnabled(false)
                     .passwordChangedAt(LocalDateTime.now())
                     .build();
             userRepository.save(user);
-            log.info("✅ Created user: {} with role: {}", email, role);
+            log.info("✅ Created user: {} with role: {} for tenant: {}", email, role, tenantId);
         }
     }
 }

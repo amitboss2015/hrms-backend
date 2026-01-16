@@ -60,8 +60,11 @@ public class AuthService {
     public AuthResponse login(LoginRequest request, HttpServletRequest httpRequest, HttpServletResponse httpResponse) {
         String tenantId = request.getTenantId();
         if (tenantId == null || tenantId.isEmpty()) {
-            tenantId = TenantContext.getTenantIdOrDefault("ORG001");
+            tenantId = TenantContext.getTenantIdOrDefault("SASA001");
         }
+        
+        // Set tenant context for CustomUserDetailsService
+        TenantContext.setTenantId(tenantId);
 
         String clientIp = getClientIp(httpRequest);
         String userAgent = httpRequest.getHeader("User-Agent");
@@ -79,7 +82,8 @@ public class AuthService {
                 throw new LockedException("Account is locked. Try again after 15 minutes.");
             }
 
-            // Authenticate
+            // Authenticate using the user's actual tenant (important for multi-tenant)
+            TenantContext.setTenantId(user.getTenantId());
             Authentication authentication = authenticationManager.authenticate(
                 new UsernamePasswordAuthenticationToken(request.getEmail(), request.getPassword())
             );
@@ -252,7 +256,7 @@ public class AuthService {
     public User registerUser(RegisterRequest request) {
         String tenantId = request.getTenantId();
         if (tenantId == null || tenantId.isEmpty()) {
-            tenantId = TenantContext.getTenantIdOrDefault("ORG001");
+            tenantId = TenantContext.getTenantIdOrDefault("SASA001");
         }
 
         // Check if email already exists

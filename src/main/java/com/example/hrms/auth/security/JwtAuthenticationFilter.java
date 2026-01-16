@@ -38,8 +38,10 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         
         try {
             String jwt = getJwtFromRequest(request);
+            log.info("🔐 JWT Filter - Path: {}, Token present: {}", request.getRequestURI(), jwt != null);
 
             if (StringUtils.hasText(jwt) && tokenProvider.validateToken(jwt)) {
+                log.info("✅ Token is valid");
                 Long userId = tokenProvider.getUserIdFromToken(jwt);
                 String tenantId = tokenProvider.getTenantIdFromToken(jwt);
 
@@ -67,12 +69,19 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                         );
 
                         SecurityContextHolder.getContext().setAuthentication(authentication);
-                        log.debug("Authenticated user: {} for tenant: {}", user.getEmail(), tenantId);
+                        log.info("✅ Authenticated user: {} with role: {} for tenant: {}", 
+                            user.getEmail(), user.getRole(), tenantId);
+                    } else {
+                        log.warn("❌ User account disabled or locked: {}", user.getEmail());
                     }
+                } else {
+                    log.warn("❌ User not found for ID: {}", userId);
                 }
+            } else {
+                log.warn("❌ Token validation failed or no token present");
             }
         } catch (Exception e) {
-            log.error("Could not set user authentication: {}", e.getMessage());
+            log.error("❌ Could not set user authentication: {}", e.getMessage(), e);
         }
 
         filterChain.doFilter(request, response);

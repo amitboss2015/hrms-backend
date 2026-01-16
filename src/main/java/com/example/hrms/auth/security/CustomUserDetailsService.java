@@ -20,12 +20,12 @@ public class CustomUserDetailsService implements UserDetailsService {
 
     @Override
     public UserDetails loadUserByUsername(String email) throws UsernameNotFoundException {
-        String tenantId = TenantContext.getTenantIdOrDefault("ORG001");
+        String tenantId = TenantContext.getTenantIdOrDefault("SASA001");
         
         // Try tenant-specific lookup first
         User user = userRepository.findByTenantIdAndEmail(tenantId, email)
                 .orElseGet(() -> 
-                    // Fallback to global lookup (for SUPER_ADMIN)
+                    // Fallback to global lookup (for any user by email alone)
                     userRepository.findByEmail(email)
                         .orElseThrow(() -> 
                             new UsernameNotFoundException("User not found: " + email)

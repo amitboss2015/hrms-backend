@@ -10,19 +10,21 @@ import java.time.LocalDate;
 import java.util.List;
 
 public interface EmployeeLeaveRepository extends JpaRepository<EmployeeLeave, Long> {
-  List<EmployeeLeave> findByOrgIdAndEmpIdAndStartDateLessThanEqualAndEndDateGreaterThanEqual(
-    String orgId, String empId, LocalDate end, LocalDate start);
   
-  List<EmployeeLeave> findByOrgIdAndEmpIdOrderByStartDateDesc(String orgId, String empId);
+  // Tenant-aware methods (entity field is now tenantId)
+  List<EmployeeLeave> findByTenantIdAndEmpIdAndStartDateLessThanEqualAndEndDateGreaterThanEqual(
+    String tenantId, String empId, LocalDate end, LocalDate start);
   
-  List<EmployeeLeave> findByOrgIdAndEmpIdAndLeaveTypeIdAndStatusIn(
-    String orgId, String empId, Long leaveTypeId, List<LeaveStatus> statuses);
+  List<EmployeeLeave> findByTenantIdAndEmpIdOrderByStartDateDesc(String tenantId, String empId);
+  
+  List<EmployeeLeave> findByTenantIdAndEmpIdAndLeaveTypeIdAndStatusIn(
+    String tenantId, String empId, Long leaveTypeId, List<LeaveStatus> statuses);
   
   @Query("SELECT COALESCE(SUM(e.totalDays), 0) FROM EmployeeLeave e " +
-         "WHERE e.orgId = :orgId AND e.empId = :empId AND e.leaveType.id = :leaveTypeId " +
+         "WHERE e.tenantId = :tenantId AND e.empId = :empId AND e.leaveType.id = :leaveTypeId " +
          "AND e.status IN :statuses " +
          "AND YEAR(e.startDate) = :year AND MONTH(e.startDate) = :month")
-  BigDecimal sumTotalDaysByMonth(@Param("orgId") String orgId, 
+  BigDecimal sumTotalDaysByMonth(@Param("tenantId") String tenantId, 
                                   @Param("empId") String empId,
                                   @Param("leaveTypeId") Long leaveTypeId,
                                   @Param("statuses") List<LeaveStatus> statuses,
@@ -30,19 +32,50 @@ public interface EmployeeLeaveRepository extends JpaRepository<EmployeeLeave, Lo
                                   @Param("month") Integer month);
   
   @Query("SELECT COALESCE(SUM(e.totalDays), 0) FROM EmployeeLeave e " +
-         "WHERE e.orgId = :orgId AND e.empId = :empId AND e.leaveType.id = :leaveTypeId " +
+         "WHERE e.tenantId = :tenantId AND e.empId = :empId AND e.leaveType.id = :leaveTypeId " +
          "AND e.status IN :statuses AND YEAR(e.startDate) = :year")
-  BigDecimal sumTotalDaysByYear(@Param("orgId") String orgId, 
+  BigDecimal sumTotalDaysByYear(@Param("tenantId") String tenantId, 
                                  @Param("empId") String empId,
                                  @Param("leaveTypeId") Long leaveTypeId,
                                  @Param("statuses") List<LeaveStatus> statuses,
                                  @Param("year") Integer year);
 
   // For leave reports - find leaves overlapping with a date range
-  List<EmployeeLeave> findByOrgIdAndStartDateLessThanEqualAndEndDateGreaterThanEqual(
-    String orgId, LocalDate endDate, LocalDate startDate);
+  List<EmployeeLeave> findByTenantIdAndStartDateLessThanEqualAndEndDateGreaterThanEqual(
+    String tenantId, LocalDate endDate, LocalDate startDate);
   
   // For employee leave report - find leaves starting within a date range
-  List<EmployeeLeave> findByOrgIdAndEmpIdAndStartDateBetween(
-    String orgId, String empId, LocalDate from, LocalDate to);
+  List<EmployeeLeave> findByTenantIdAndEmpIdAndStartDateBetween(
+    String tenantId, String empId, LocalDate from, LocalDate to);
+  
+  // ===== LEGACY METHODS (backward compatibility) =====
+  
+  @Deprecated
+  default List<EmployeeLeave> findByOrgIdAndEmpIdAndStartDateLessThanEqualAndEndDateGreaterThanEqual(
+      String orgId, String empId, LocalDate end, LocalDate start) {
+    return findByTenantIdAndEmpIdAndStartDateLessThanEqualAndEndDateGreaterThanEqual(orgId, empId, end, start);
+  }
+  
+  @Deprecated
+  default List<EmployeeLeave> findByOrgIdAndEmpIdOrderByStartDateDesc(String orgId, String empId) {
+    return findByTenantIdAndEmpIdOrderByStartDateDesc(orgId, empId);
+  }
+  
+  @Deprecated
+  default List<EmployeeLeave> findByOrgIdAndEmpIdAndLeaveTypeIdAndStatusIn(
+      String orgId, String empId, Long leaveTypeId, List<LeaveStatus> statuses) {
+    return findByTenantIdAndEmpIdAndLeaveTypeIdAndStatusIn(orgId, empId, leaveTypeId, statuses);
+  }
+  
+  @Deprecated
+  default List<EmployeeLeave> findByOrgIdAndStartDateLessThanEqualAndEndDateGreaterThanEqual(
+      String orgId, LocalDate endDate, LocalDate startDate) {
+    return findByTenantIdAndStartDateLessThanEqualAndEndDateGreaterThanEqual(orgId, endDate, startDate);
+  }
+  
+  @Deprecated
+  default List<EmployeeLeave> findByOrgIdAndEmpIdAndStartDateBetween(
+      String orgId, String empId, LocalDate from, LocalDate to) {
+    return findByTenantIdAndEmpIdAndStartDateBetween(orgId, empId, from, to);
+  }
 }

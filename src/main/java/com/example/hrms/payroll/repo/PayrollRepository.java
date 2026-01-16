@@ -12,39 +12,68 @@ import java.util.Optional;
 
 public interface PayrollRepository extends JpaRepository<Payroll, Long> {
     
-    Optional<Payroll> findByOrgIdAndEmpIdAndYearAndMonth(
-        String orgId, String empId, Integer year, Integer month);
+    // ============ TENANT-AWARE METHODS ============
     
-    List<Payroll> findByOrgIdAndYearAndMonthOrderByEmpIdAsc(
-        String orgId, Integer year, Integer month);
+    Optional<Payroll> findByTenantIdAndEmpIdAndYearAndMonth(
+        String tenantId, String empId, Integer year, Integer month);
     
-    List<Payroll> findByOrgIdAndYearAndMonthAndStatus(
-        String orgId, Integer year, Integer month, PayrollStatus status);
+    List<Payroll> findByTenantIdAndYearAndMonthOrderByEmpIdAsc(
+        String tenantId, Integer year, Integer month);
     
-    List<Payroll> findByOrgIdAndEmpIdOrderByYearDescMonthDesc(String orgId, String empId);
+    List<Payroll> findByTenantIdAndYearAndMonthAndStatus(
+        String tenantId, Integer year, Integer month, PayrollStatus status);
     
-    List<Payroll> findByOrgIdAndYearOrderByMonthDescEmpIdAsc(String orgId, Integer year);
+    List<Payroll> findByTenantIdAndEmpIdOrderByYearDescMonthDesc(String tenantId, String empId);
+    
+    List<Payroll> findByTenantIdAndYearOrderByMonthDescEmpIdAsc(String tenantId, Integer year);
 
     // Summary queries
-    @Query("SELECT SUM(p.grossSalary) FROM Payroll p WHERE p.orgId = :orgId AND p.year = :year AND p.month = :month")
-    BigDecimal sumGrossSalary(@Param("orgId") String orgId, @Param("year") int year, @Param("month") int month);
+    @Query("SELECT SUM(p.grossSalary) FROM Payroll p WHERE p.tenantId = :tenantId AND p.year = :year AND p.month = :month")
+    BigDecimal sumGrossSalary(@Param("tenantId") String tenantId, @Param("year") int year, @Param("month") int month);
 
-    @Query("SELECT SUM(p.netSalary) FROM Payroll p WHERE p.orgId = :orgId AND p.year = :year AND p.month = :month")
-    BigDecimal sumNetSalary(@Param("orgId") String orgId, @Param("year") int year, @Param("month") int month);
+    @Query("SELECT SUM(p.netSalary) FROM Payroll p WHERE p.tenantId = :tenantId AND p.year = :year AND p.month = :month")
+    BigDecimal sumNetSalary(@Param("tenantId") String tenantId, @Param("year") int year, @Param("month") int month);
 
-    @Query("SELECT SUM(p.pfEmployee) FROM Payroll p WHERE p.orgId = :orgId AND p.year = :year AND p.month = :month")
-    BigDecimal sumPfEmployee(@Param("orgId") String orgId, @Param("year") int year, @Param("month") int month);
+    @Query("SELECT SUM(p.pfEmployee) FROM Payroll p WHERE p.tenantId = :tenantId AND p.year = :year AND p.month = :month")
+    BigDecimal sumPfEmployee(@Param("tenantId") String tenantId, @Param("year") int year, @Param("month") int month);
 
-    @Query("SELECT SUM(p.pfCompany) FROM Payroll p WHERE p.orgId = :orgId AND p.year = :year AND p.month = :month")
-    BigDecimal sumPfCompany(@Param("orgId") String orgId, @Param("year") int year, @Param("month") int month);
+    @Query("SELECT SUM(p.pfCompany) FROM Payroll p WHERE p.tenantId = :tenantId AND p.year = :year AND p.month = :month")
+    BigDecimal sumPfCompany(@Param("tenantId") String tenantId, @Param("year") int year, @Param("month") int month);
 
-    @Query("SELECT SUM(p.esiEmployee) FROM Payroll p WHERE p.orgId = :orgId AND p.year = :year AND p.month = :month")
-    BigDecimal sumEsi(@Param("orgId") String orgId, @Param("year") int year, @Param("month") int month);
+    @Query("SELECT SUM(p.esiEmployee) FROM Payroll p WHERE p.tenantId = :tenantId AND p.year = :year AND p.month = :month")
+    BigDecimal sumEsi(@Param("tenantId") String tenantId, @Param("year") int year, @Param("month") int month);
 
     // Count by status
-    long countByOrgIdAndYearAndMonthAndStatus(String orgId, int year, int month, PayrollStatus status);
+    long countByTenantIdAndYearAndMonthAndStatus(String tenantId, int year, int month, PayrollStatus status);
 
     // Find by payment mode
-    List<Payroll> findByOrgIdAndYearAndMonthAndPaymentModeOrderByEmpIdAsc(
-        String orgId, int year, int month, com.example.hrms.payroll.domain.enums.PaymentMode paymentMode);
+    List<Payroll> findByTenantIdAndYearAndMonthAndPaymentModeOrderByEmpIdAsc(
+        String tenantId, int year, int month, com.example.hrms.payroll.domain.enums.PaymentMode paymentMode);
+    
+    // ============ LEGACY METHODS (backward compatibility) ============
+    
+    @Deprecated
+    default Optional<Payroll> findByOrgIdAndEmpIdAndYearAndMonth(String orgId, String empId, Integer year, Integer month) {
+        return findByTenantIdAndEmpIdAndYearAndMonth(orgId, empId, year, month);
+    }
+    
+    @Deprecated
+    default List<Payroll> findByOrgIdAndYearAndMonthOrderByEmpIdAsc(String orgId, Integer year, Integer month) {
+        return findByTenantIdAndYearAndMonthOrderByEmpIdAsc(orgId, year, month);
+    }
+    
+    @Deprecated
+    default List<Payroll> findByOrgIdAndYearAndMonthAndStatus(String orgId, Integer year, Integer month, PayrollStatus status) {
+        return findByTenantIdAndYearAndMonthAndStatus(orgId, year, month, status);
+    }
+    
+    @Deprecated
+    default List<Payroll> findByOrgIdAndEmpIdOrderByYearDescMonthDesc(String orgId, String empId) {
+        return findByTenantIdAndEmpIdOrderByYearDescMonthDesc(orgId, empId);
+    }
+    
+    @Deprecated
+    default List<Payroll> findByOrgIdAndYearOrderByMonthDescEmpIdAsc(String orgId, Integer year) {
+        return findByTenantIdAndYearOrderByMonthDescEmpIdAsc(orgId, year);
+    }
 }
