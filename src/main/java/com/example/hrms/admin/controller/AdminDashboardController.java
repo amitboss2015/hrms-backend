@@ -3,11 +3,14 @@ package com.example.hrms.admin.controller;
 import com.example.hrms.admin.domain.RegistrationAttempt;
 import com.example.hrms.admin.domain.TrialTracking;
 import com.example.hrms.admin.service.AdminDashboardService;
+import com.example.hrms.admin.service.CompanyManagementService;
 import com.example.hrms.admin.service.FraudDetectionService;
+import com.example.hrms.tenant.domain.Tenant;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -27,6 +30,7 @@ public class AdminDashboardController {
 
     private final AdminDashboardService dashboardService;
     private final FraudDetectionService fraudService;
+    private final CompanyManagementService companyService;
 
     // ==================== DASHBOARD ====================
 
@@ -199,10 +203,77 @@ public class AdminDashboardController {
         ));
     }
 
+    // ==================== COMPANY MANAGEMENT ====================
+
+    /**
+     * Get all active companies
+     */
+    @GetMapping("/companies")
+    public ResponseEntity<List<Tenant>> getActiveCompanies() {
+        return ResponseEntity.ok(companyService.getActiveCompanies());
+    }
+
+    /**
+     * Get companies in recycle bin
+     */
+    @GetMapping("/companies/recycle-bin")
+    public ResponseEntity<List<Tenant>> getDeletedCompanies() {
+        return ResponseEntity.ok(companyService.getDeletedCompanies());
+    }
+
+    /**
+     * Get company management statistics
+     */
+    @GetMapping("/companies/stats")
+    public ResponseEntity<Map<String, Object>> getCompanyStats() {
+        return ResponseEntity.ok(companyService.getCompanyStats());
+    }
+
+    /**
+     * Get data counts for a company (before deletion)
+     */
+    @GetMapping("/companies/{tenantId}/data-counts")
+    public ResponseEntity<Map<String, Integer>> getCompanyDataCounts(@PathVariable String tenantId) {
+        return ResponseEntity.ok(companyService.getCompanyDataCounts(tenantId));
+    }
+
+    /**
+     * Soft delete a company (move to recycle bin)
+     */
+    @PostMapping("/companies/{tenantId}/soft-delete")
+    public ResponseEntity<Tenant> softDeleteCompany(
+            @PathVariable String tenantId,
+            @RequestBody SoftDeleteRequest request,
+            Authentication auth) {
+        String deletedBy = auth != null ? auth.getName() : request.deletedBy();
+        return ResponseEntity.ok(companyService.softDeleteCompany(tenantId, deletedBy, request.reason()));
+    }
+
+    /**
+     * Restore a company from recycle bin
+     */
+    @PostMapping("/companies/{tenantId}/restore")
+    public ResponseEntity<Tenant> restoreCompany(@PathVariable String tenantId) {
+        return ResponseEntity.ok(companyService.restoreCompany(tenantId));
+    }
+
+    /**
+     * Permanently delete a company and ALL its data
+     * WARNING: This is irreversible!
+     */
+    @DeleteMapping("/companies/{tenantId}/permanent")
+    public ResponseEntity<Map<String, Object>> permanentDeleteCompany(
+            @PathVariable String tenantId,
+            Authentication auth) {
+        String deletedBy = auth != null ? auth.getName() : "SUPER_ADMIN";
+        return ResponseEntity.ok(companyService.permanentDeleteCompany(tenantId, deletedBy));
+    }
+
     // ==================== REQUEST RECORDS ====================
 
     record SuspendRequest(String reason, String suspendedBy) {}
     record NoteRequest(String note, String addedBy) {}
     record FraudCheckRequest(String email, String companyName, String phone, 
                             String ipAddress, String userAgent) {}
+    record SoftDeleteRequest(String reason, String deletedBy) {}
 }

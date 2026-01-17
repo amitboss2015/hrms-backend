@@ -66,6 +66,16 @@ public class DataInitializer implements CommandLineRunner {
         // Super Admin - for system-level access
         createUserIfNotExists(
             DEFAULT_TENANT_ID,
+            "superadmin@chandrahr.in",
+            "SuperAdmin@123",
+            "Super",
+            "Admin",
+            UserRole.SUPER_ADMIN
+        );
+        
+        // Also create with old email for backward compatibility
+        createUserIfNotExists(
+            DEFAULT_TENANT_ID,
             "superadmin@hrms.in",
             "SuperAdmin@123",
             "Super",

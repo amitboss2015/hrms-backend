@@ -49,4 +49,28 @@ public interface TenantRepository extends JpaRepository<Tenant, String> {
     @Query(value = "SELECT COUNT(*) FROM employee WHERE tenant_id = :tenantId AND status = 'ACTIVE'", 
            nativeQuery = true)
     long countActiveEmployees(@Param("tenantId") String tenantId);
+    
+    /**
+     * Find all active (not deleted) tenants
+     */
+    @Query("SELECT t FROM Tenant t WHERE t.deleted = false OR t.deleted IS NULL")
+    List<Tenant> findAllActive();
+    
+    /**
+     * Find all deleted tenants (recycle bin)
+     */
+    @Query("SELECT t FROM Tenant t WHERE t.deleted = true ORDER BY t.deletedAt DESC")
+    List<Tenant> findAllDeleted();
+    
+    /**
+     * Count active tenants
+     */
+    @Query("SELECT COUNT(t) FROM Tenant t WHERE t.deleted = false OR t.deleted IS NULL")
+    long countActive();
+    
+    /**
+     * Count deleted tenants
+     */
+    @Query("SELECT COUNT(t) FROM Tenant t WHERE t.deleted = true")
+    long countDeleted();
 }

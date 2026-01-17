@@ -95,6 +95,18 @@ public class Tenant {
     @Builder.Default
     private String currency = "INR";
     
+    // Soft Delete Fields
+    @Builder.Default
+    private Boolean deleted = false;
+    
+    private LocalDateTime deletedAt;
+    
+    @Column(length = 100)
+    private String deletedBy;  // Email of admin who deleted
+    
+    @Column(length = 500)
+    private String deleteReason;
+    
     // Audit
     @Column(updatable = false)
     private LocalDateTime createdAt;
