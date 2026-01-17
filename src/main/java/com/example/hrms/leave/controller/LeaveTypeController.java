@@ -2,6 +2,7 @@ package com.example.hrms.leave.controller;
 
 import com.example.hrms.leave.domain.LeaveType;
 import com.example.hrms.leave.service.LeaveTypeService;
+import com.example.hrms.tenant.TenantContext;
 import org.springframework.web.bind.annotation.*;
 import java.util.List;
 
@@ -17,7 +18,11 @@ public class LeaveTypeController {
     }
 
     @GetMapping
-    public List<LeaveType> list(@RequestParam String orgId) {
+    public List<LeaveType> list(@RequestParam(required = false) String orgId) {
+        // Use TenantContext if orgId not provided
+        if (orgId == null || orgId.isEmpty()) {
+            orgId = TenantContext.getTenantId();
+        }
         return service.list(orgId);
     }
 

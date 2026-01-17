@@ -3,6 +3,8 @@ package com.example.hrms.payroll.controller;
 import com.example.hrms.payroll.domain.Payroll;
 import com.example.hrms.payroll.domain.enums.PaymentMode;
 import com.example.hrms.payroll.service.PayrollService;
+import com.example.hrms.tenant.TenantContext;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -14,6 +16,7 @@ import java.util.Map;
 @RequestMapping("/api/payroll")
 @CrossOrigin(origins = "*", methods = {RequestMethod.GET, RequestMethod.POST, RequestMethod.PUT, 
         RequestMethod.DELETE, RequestMethod.PATCH, RequestMethod.OPTIONS})
+@Slf4j
 public class PayrollController {
 
     private final PayrollService payrollService;
@@ -40,11 +43,20 @@ public class PayrollController {
     /**
      * Generate payroll for all employees for a month
      */
-    @PostMapping("/generate")
+    @PostMapping(value = "/generate", produces = "application/json")
     public ResponseEntity<?> generatePayroll(
-            @RequestParam(defaultValue = "ORG001") String orgId,
+            @RequestParam(required = false) String orgId,
             @RequestParam Integer year,
             @RequestParam Integer month) {
+        
+        log.info("🎯🎯🎯 ENTERING generatePayroll endpoint! orgId={}, year={}, month={}", orgId, year, month);
+        
+        // Use TenantContext if orgId not provided
+        if (orgId == null || orgId.isEmpty()) {
+            orgId = TenantContext.getTenantId();
+            log.info("📍 Using TenantContext orgId: {}", orgId);
+        }
+        log.info("🎯 Generating payroll for orgId={}, year={}, month={}", orgId, year, month);
         
         // First check if attendance is available
         Map<String, Object> attendanceCheck = payrollService.checkAttendanceAvailability(orgId, year, month);

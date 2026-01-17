@@ -435,16 +435,30 @@ public class PayrollService {
         LocalDate startDate = ym.atDay(1);
         LocalDate endDate = ym.atEndOfMonth();
         
+        // Filter employees by orgId (tenantId) and status
         List<Employee> employees = employeeRepo.findAll().stream()
                 .filter(e -> e.getStatus() == com.example.hrms.domain.enums.EmployeeStatus.ACTIVE)
+                .filter(e -> orgId == null || orgId.equals(e.getTenantId()))
                 .toList();
 
         // Get all attendance for the month to check which employees have attendance
+        // Convert orgId string to Long for attendance query (org_id is bigint in attendance tables)
+        Long orgIdLong = null;
+        try {
+            // Try to get numeric org_id from tenant table or use employee ids
+            orgIdLong = Long.parseLong(orgId.replaceAll("[^0-9]", ""));
+        } catch (Exception e) {
+            // If orgId is not numeric, we'll filter by employee IDs instead
+        }
+        
+        Set<Long> orgEmployeeIds = employees.stream().map(Employee::getId).collect(java.util.stream.Collectors.toSet());
+        
         List<AttendanceDay> allAttendance = attendanceDayRepo.findAll().stream()
                 .filter(a -> {
                     LocalDate workDate = a.getWorkDate();
                     return workDate != null && !workDate.isBefore(startDate) && !workDate.isAfter(endDate);
                 })
+                .filter(a -> orgEmployeeIds.contains(a.getEmployeeId())) // Filter by employees in this org
                 .toList();
         
         // Group attendance by employee and check for present days

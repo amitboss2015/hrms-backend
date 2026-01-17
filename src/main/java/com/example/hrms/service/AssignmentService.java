@@ -6,11 +6,13 @@ import com.example.hrms.domain.enums.PatternType;
 import com.example.hrms.repo.EmployeeShiftAssignmentRepository;
 import com.example.hrms.repo.EmployeeRepository;
 import com.example.hrms.repo.ShiftRepository;
+import com.example.hrms.tenant.TenantContext;
 import jakarta.transaction.Transactional;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
 import java.util.*;
+import java.util.stream.Collectors;
 
 @Service
 public class AssignmentService {
@@ -59,8 +61,18 @@ public class AssignmentService {
     return repo.saveAll(result);
   }
 
+    /**
+     * Get all assignments for current tenant
+     */
     public List<EmployeeShiftAssignment> getAll() {
-        return repo.findAll();
+        String tenantId = TenantContext.getTenantId();
+        if (tenantId == null || tenantId.isEmpty()) {
+            return repo.findAll(); // Fallback for backward compatibility
+        }
+        // Filter by tenant - assignments belong to employees which have tenantId
+        return repo.findAll().stream()
+            .filter(a -> a.getEmployee() != null && tenantId.equals(a.getEmployee().getTenantId()))
+            .collect(Collectors.toList());
     }
 
     public List<EmployeeShiftAssignment> listByShiftCode(String shiftCode) {

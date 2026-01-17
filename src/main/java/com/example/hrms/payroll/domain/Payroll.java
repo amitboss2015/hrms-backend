@@ -27,9 +27,13 @@ public class Payroll {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    // Multi-tenancy support (replaces orgId)
-    @Column(nullable = false, length = 50)
+    // Multi-tenancy support
+    @Column(name = "tenant_id", nullable = false, length = 50)
     private String tenantId;
+    
+    // Backward compatibility with existing org_id column
+    @Column(name = "org_id", nullable = false)
+    private String orgId;
 
     @Column(nullable = false)
     private String empId;
@@ -226,10 +230,16 @@ public class Payroll {
     public void setId(Long id) { this.id = id; }
 
     public String getTenantId() { return tenantId; }
-    public void setTenantId(String tenantId) { this.tenantId = tenantId; }
-    // Backward compatibility
-    public String getOrgId() { return tenantId; }
-    public void setOrgId(String orgId) { this.tenantId = orgId; }
+    public void setTenantId(String tenantId) { 
+        this.tenantId = tenantId; 
+        this.orgId = tenantId; // Keep both in sync
+    }
+    
+    public String getOrgId() { return orgId; }
+    public void setOrgId(String orgId) { 
+        this.orgId = orgId; 
+        this.tenantId = orgId; // Keep both in sync
+    }
 
     public String getEmpId() { return empId; }
     public void setEmpId(String empId) { this.empId = empId; }

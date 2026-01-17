@@ -97,9 +97,10 @@ public class RateLimitingFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getRequestURI();
-        // Skip rate limiting for static resources
+        // Skip rate limiting for static resources and public endpoints
         return path.startsWith("/swagger") || 
                path.startsWith("/v3/api-docs") ||
-               path.startsWith("/actuator/health");
+               path.startsWith("/actuator/health") ||
+               path.startsWith("/api/public/");
     }
 }

@@ -14,7 +14,9 @@ import com.example.hrms.payroll.repo.PayrollRepository;
 import com.example.hrms.repo.EmployeeRepository;
 import com.example.hrms.repo.EmployeeShiftAssignmentRepository;
 import com.example.hrms.repo.ShiftRepository;
+import com.example.hrms.tenant.TenantContext;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -25,6 +27,7 @@ import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class AttendanceSummaryServiceImpl implements AttendanceSummaryService {
 
     private final AttendanceDayRepository dayRepo;
@@ -41,13 +44,25 @@ public class AttendanceSummaryServiceImpl implements AttendanceSummaryService {
 
     @Override
     public List<MonthlySummaryDTO> getSummary(int year, int month, Long orgId) {
+        // Get tenant ID from context - this is the key for data isolation
+        String tenantId = TenantContext.getTenantId();
+        log.info("📊 Getting attendance summary for tenant: {}, year: {}, month: {}", tenantId, year, month);
+        
+        if (tenantId == null || tenantId.isEmpty()) {
+            log.warn("⚠️ No tenant context set, returning empty summary");
+            return List.of();
+        }
+        
         YearMonth ym = YearMonth.of(year, month);
         LocalDate from = ym.atDay(1);
         LocalDate to = ym.atEndOfMonth();
         int totalDaysInMonth = ym.lengthOfMonth();
 
-        // Get all attendance day records for the month
-        List<AttendanceDay> days = dayRepo.findByWorkDateBetween(from, to);
+        // Get attendance day records for the month - FILTERED BY TENANT
+        List<AttendanceDay> days = dayRepo.findByWorkDateBetween(from, to).stream()
+                .filter(d -> tenantId.equals(d.getTenantId()) || 
+                             (d.getTenantId() == null && orgId != null && orgId.toString().equals(String.valueOf(d.getOrgId()))))
+                .collect(Collectors.toList());
 
         // If no computed day records, rebuild from punches
         if (days.isEmpty()) {
@@ -60,17 +75,26 @@ public class AttendanceSummaryServiceImpl implements AttendanceSummaryService {
             for (Long empId : empIds) {
                 attendanceEngine.rebuildEmployeeMonth(orgId == null ? 1L : orgId, empId, ym);
             }
-            days = dayRepo.findByWorkDateBetween(from, to);
-            if (days.isEmpty()) return List.of();
+            days = dayRepo.findByWorkDateBetween(from, to).stream()
+                    .filter(d -> tenantId.equals(d.getTenantId()) || 
+                                 (d.getTenantId() == null && orgId != null && orgId.toString().equals(String.valueOf(d.getOrgId()))))
+                    .collect(Collectors.toList());
+            if (days.isEmpty()) {
+                log.info("📊 No attendance data found for tenant: {}", tenantId);
+                return List.of();
+            }
         }
 
-        // Get all employees
-        List<Employee> allEmployees = employeeRepo.findAll();
+        // Get employees for THIS TENANT ONLY
+        List<Employee> allEmployees = employeeRepo.findByTenantId(tenantId);
+        log.info("📊 Found {} employees for tenant: {}", allEmployees.size(), tenantId);
         Map<Long, Employee> empMap = allEmployees.stream()
                 .collect(Collectors.toMap(Employee::getId, e -> e));
 
-        // Get shift assignments
-        List<EmployeeShiftAssignment> shiftAssignments = shiftAssignmentRepo.findAll();
+        // Get shift assignments - FILTERED BY TENANT (via employee)
+        List<EmployeeShiftAssignment> shiftAssignments = shiftAssignmentRepo.findAll().stream()
+                .filter(sa -> sa.getEmployee() != null && tenantId.equals(sa.getEmployee().getTenantId()))
+                .collect(Collectors.toList());
         Map<Long, Long> empToShiftMap = shiftAssignments.stream()
                 .filter(sa -> sa.getEmployee() != null && sa.getShift() != null)
                 .collect(Collectors.toMap(
@@ -79,14 +103,13 @@ public class AttendanceSummaryServiceImpl implements AttendanceSummaryService {
                         (a, b) -> b // Keep latest
                 ));
 
-        // Get all shifts
-        List<Shift> allShifts = shiftRepo.findAll();
+        // Get shifts for THIS TENANT ONLY
+        List<Shift> allShifts = shiftRepo.findByTenantId(tenantId);
         Map<Long, Shift> shiftMap = allShifts.stream()
                 .collect(Collectors.toMap(Shift::getId, s -> s));
 
-        // Get payroll data for the month
-        String orgIdStr = orgId != null ? String.valueOf(orgId) : "ORG001";
-        List<Payroll> payrolls = payrollRepo.findByOrgIdAndYearAndMonthOrderByEmpIdAsc(orgIdStr, year, month);
+        // Get payroll data for the month - use tenant ID
+        List<Payroll> payrolls = payrollRepo.findByOrgIdAndYearAndMonthOrderByEmpIdAsc(tenantId, year, month);
         Map<String, Payroll> payrollMap = payrolls.stream()
                 .collect(Collectors.toMap(Payroll::getEmpId, p -> p, (a, b) -> b));
 

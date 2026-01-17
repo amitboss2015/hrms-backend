@@ -70,9 +70,23 @@ public class AuthService {
         String userAgent = httpRequest.getHeader("User-Agent");
 
         try {
-            // Find user
+            // Find user - first try with provided tenant, then by email alone
             User user = userRepository.findForAuthentication(tenantId, request.getEmail())
-                    .orElseThrow(() -> new BadCredentialsException("Invalid email or password"));
+                    .orElseGet(() -> {
+                        // If user not found with provided tenant, try finding by email alone
+                        // This enables login without knowing exact tenant ID
+                        return userRepository.findByEmail(request.getEmail())
+                                .filter(User::isEnabled)
+                                .orElse(null);
+                    });
+            
+            if (user == null) {
+                throw new BadCredentialsException("Invalid email or password");
+            }
+            
+            // Update tenant context with user's actual tenant
+            tenantId = user.getTenantId();
+            TenantContext.setTenantId(tenantId);
 
             // Check if account is locked
             if (!user.isAccountNonLocked()) {

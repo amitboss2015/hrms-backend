@@ -21,13 +21,12 @@ public class ShiftService {
      * List all shifts for current tenant
      */
     public List<Shift> list() {
-        String tenantId = TenantContext.getTenantIdOrDefault("ORG001");
-        List<Shift> shifts = repo.findByTenantId(tenantId);
-        // Fallback to all if no tenant-specific shifts found
-        if (shifts.isEmpty()) {
-            shifts = repo.findAll();
+        String tenantId = TenantContext.getTenantId();
+        if (tenantId == null || tenantId.isEmpty()) {
+            tenantId = "ORG001"; // Default only for backward compatibility
         }
-        return shifts;
+        // Only return shifts for this tenant - no fallback to all tenants
+        return repo.findByTenantId(tenantId);
     }
     
     /**
@@ -42,13 +41,12 @@ public class ShiftService {
      * Get shift by code for current tenant
      */
     public Optional<Shift> getByCode(String code) {
-        String tenantId = TenantContext.getTenantIdOrDefault("ORG001");
-        Optional<Shift> result = repo.findByTenantIdAndCode(tenantId, code);
-        // Fallback for backward compatibility
-        if (result.isEmpty()) {
-            result = repo.findByCode(code);
+        String tenantId = TenantContext.getTenantId();
+        if (tenantId == null || tenantId.isEmpty()) {
+            tenantId = "ORG001";
         }
-        return result;
+        // Only return shift for this tenant - no cross-tenant access
+        return repo.findByTenantIdAndCode(tenantId, code);
     }
 
     /**

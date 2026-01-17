@@ -39,13 +39,13 @@ public class EmployeeService {
      * Get employee by code for current tenant
      */
     public Optional<Employee> getByEmpCode(String empCode) {
-        String tenantId = TenantContext.getTenantIdOrDefault("ORG001");
-        Optional<Employee> result = repo.findByTenantIdAndEmpCode(tenantId, empCode);
-        // Fallback for backward compatibility
-        if (result.isEmpty()) {
-            result = repo.findByEmpCode(empCode);
+        String tenantId = TenantContext.getTenantId();
+        if (tenantId == null || tenantId.isEmpty()) {
+            // Fallback for backward compatibility when no tenant context
+            return repo.findByEmpCode(empCode);
         }
-        return result;
+        // Only return employee for this tenant - no cross-tenant access
+        return repo.findByTenantIdAndEmpCode(tenantId, empCode);
     }
 
     /**
@@ -53,12 +53,16 @@ public class EmployeeService {
      */
     @Transactional
     public Employee upsert(Employee e) {
-        String tenantId = TenantContext.getTenantIdOrDefault("ORG001");
+        String tenantId = TenantContext.getTenantId();
         
-        // Set tenant ID if not already set
-        if (e.getTenantId() == null || e.getTenantId().isEmpty()) {
-            e.setTenantId(tenantId);
+        // Require tenant context to be set - don't fallback to ORG001
+        if (tenantId == null || tenantId.isEmpty()) {
+            throw new RuntimeException("Tenant context not set. Please ensure you are logged in.");
         }
+        
+        // ALWAYS use the tenant from context, not from the request body
+        // This prevents cross-tenant data manipulation
+        e.setTenantId(tenantId);
         
         return repo.findByTenantIdAndEmpCode(tenantId, e.getEmpCode()).map(cur -> {
             cur.setFirstName(e.getFirstName()); 

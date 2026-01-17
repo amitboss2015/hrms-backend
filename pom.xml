@@ -101,6 +101,12 @@
       <version>8.7.0</version>
     </dependency>
 
+    <!-- Email (Gmail SMTP) -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-mail</artifactId>
+    </dependency>
+
     <!-- Tests (optional) -->
     <dependency>
       <groupId>org.springframework.boot</groupId>

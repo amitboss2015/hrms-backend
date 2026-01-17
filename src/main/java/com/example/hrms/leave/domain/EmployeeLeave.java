@@ -7,13 +7,17 @@ import java.time.LocalDate;
 
 @Entity
 @Table(name = "employee_leave",
-       indexes = @Index(name = "idx_empleave_tenant", columnList = "tenantId"))
+       indexes = @Index(name = "idx_empleave_tenant", columnList = "tenant_id"))
 public class EmployeeLeave {
   @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
   private Long id;
 
-  // Multi-tenancy support (replaces orgId)
-  @Column(nullable = false, length = 50) private String tenantId;
+  // Multi-tenancy support
+  @Column(name = "tenant_id", nullable = false, length = 50) 
+  private String tenantId;
+  
+  @Column(name = "org_id", nullable = false, length = 255)
+  private String orgId;
   @Column(nullable = false) private String empId;
 
   @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "leave_type_id", nullable = false)
@@ -42,9 +46,12 @@ public class EmployeeLeave {
   public void setId(Long id) { this.id = id; }
   public String getTenantId() { return tenantId; }
   public void setTenantId(String tenantId) { this.tenantId = tenantId; }
-  // Backward compatibility
-  public String getOrgId() { return tenantId; }
-  public void setOrgId(String orgId) { this.tenantId = orgId; }
+  // Org ID field (for database compatibility)
+  public String getOrgId() { return orgId; }
+  public void setOrgId(String orgId) { 
+    this.orgId = orgId; 
+    this.tenantId = orgId; // Keep both in sync
+  }
   public String getEmpId() { return empId; }
   public void setEmpId(String empId) { this.empId = empId; }
   public LeaveType getLeaveType() { return leaveType; }
