@@ -32,10 +32,10 @@ public class EmailService {
     @Value("${app.base-url:http://localhost:5173}")
     private String baseUrl;
 
-    @Value("${spring.mail.username:noreply@hrms.in}")
+    @Value("${spring.mail.username:noreply@chandrahr.in}")
     private String fromEmail;
 
-    @Value("${app.name:HRMS}")
+    @Value("${app.name:ChandraHR}")
     private String appName;
 
     /**
@@ -196,7 +196,7 @@ public class EmailService {
                                 <strong>Company:</strong> %s
                             </p>
                             <p style="color:#166534;margin:5px 0;font-size:14px;">
-                                <strong>Your URL:</strong> %s.hrms.in
+                                <strong>Your URL:</strong> %s.chandrahr.in
                             </p>
                         </div>
                         
