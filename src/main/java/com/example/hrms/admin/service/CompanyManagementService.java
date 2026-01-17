@@ -48,11 +48,19 @@ public class CompanyManagementService {
         return stats;
     }
 
+    // System tenant that cannot be deleted
+    private static final String SYSTEM_TENANT_ID = "SASA001";
+    
     /**
      * Soft delete a company - moves to recycle bin
      */
     @Transactional
     public Tenant softDeleteCompany(String tenantId, String deletedBy, String reason) {
+        // Prevent deleting system tenant
+        if (SYSTEM_TENANT_ID.equals(tenantId)) {
+            throw new RuntimeException("Cannot delete the system tenant (SASA001). This is the default tenant used for Super Admin access.");
+        }
+        
         Tenant tenant = tenantRepo.findById(tenantId)
                 .orElseThrow(() -> new RuntimeException("Company not found: " + tenantId));
 
@@ -98,6 +106,11 @@ public class CompanyManagementService {
      */
     @Transactional
     public Map<String, Object> permanentDeleteCompany(String tenantId, String deletedBy) {
+        // Prevent deleting system tenant
+        if (SYSTEM_TENANT_ID.equals(tenantId)) {
+            throw new RuntimeException("Cannot permanently delete the system tenant (SASA001). This is the default tenant used for Super Admin access.");
+        }
+        
         Tenant tenant = tenantRepo.findById(tenantId)
                 .orElseThrow(() -> new RuntimeException("Company not found: " + tenantId));
 
@@ -148,10 +161,10 @@ public class CompanyManagementService {
         deletedCounts.put("holidays", deleteByTenantId("holidays", tenantId));
         deletedCounts.put("weekly_off_config", deleteByTenantId("weekly_off_config", tenantId));
 
-        // 9. Users (admin accounts)
+        // 9. Users (admin accounts) - PRESERVE SUPER_ADMIN users
         deletedCounts.put("refresh_token", deleteByTenantId("refresh_token", tenantId));
         deletedCounts.put("login_audit", deleteByTenantId("login_audit", tenantId));
-        deletedCounts.put("users", deleteByTenantId("users", tenantId));
+        deletedCounts.put("users", deleteNonSuperAdminUsers(tenantId));
 
         // 10. Registration and trial tracking
         deletedCounts.put("trial_tracking", deleteByTenantId("trial_tracking", tenantId));
@@ -211,6 +224,32 @@ public class CompanyManagementService {
             Integer count = jdbcTemplate.queryForObject(sql, Integer.class, tenantId);
             return count != null ? count : 0;
         } catch (Exception e) {
+            return 0;
+        }
+    }
+    
+    /**
+     * Delete users but preserve SUPER_ADMIN users (they are needed for system access)
+     */
+    private int deleteNonSuperAdminUsers(String tenantId) {
+        try {
+            // Delete only non-SUPER_ADMIN users for this tenant
+            String sql = "DELETE FROM users WHERE tenant_id = ? AND role != 'SUPER_ADMIN'";
+            int count = jdbcTemplate.update(sql, tenantId);
+            if (count > 0) {
+                log.info("  Deleted {} non-super-admin users from tenant {}", count, tenantId);
+            }
+            
+            // Count remaining super admins (should not be deleted)
+            String countSql = "SELECT COUNT(*) FROM users WHERE tenant_id = ? AND role = 'SUPER_ADMIN'";
+            Integer superAdminCount = jdbcTemplate.queryForObject(countSql, Integer.class, tenantId);
+            if (superAdminCount != null && superAdminCount > 0) {
+                log.info("  Preserved {} SUPER_ADMIN users for tenant {}", superAdminCount, tenantId);
+            }
+            
+            return count;
+        } catch (Exception e) {
+            log.debug("Could not delete users: {}", e.getMessage());
             return 0;
         }
     }

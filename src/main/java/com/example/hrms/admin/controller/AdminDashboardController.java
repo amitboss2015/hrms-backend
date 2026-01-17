@@ -241,20 +241,36 @@ public class AdminDashboardController {
      * Soft delete a company (move to recycle bin)
      */
     @PostMapping("/companies/{tenantId}/soft-delete")
-    public ResponseEntity<Tenant> softDeleteCompany(
+    public ResponseEntity<?> softDeleteCompany(
             @PathVariable String tenantId,
             @RequestBody SoftDeleteRequest request,
             Authentication auth) {
-        String deletedBy = auth != null ? auth.getName() : request.deletedBy();
-        return ResponseEntity.ok(companyService.softDeleteCompany(tenantId, deletedBy, request.reason()));
+        try {
+            String deletedBy = auth != null ? auth.getName() : request.deletedBy();
+            return ResponseEntity.ok(companyService.softDeleteCompany(tenantId, deletedBy, request.reason()));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of(
+                "error", "Cannot delete company",
+                "message", e.getMessage(),
+                "tenantId", tenantId
+            ));
+        }
     }
 
     /**
      * Restore a company from recycle bin
      */
     @PostMapping("/companies/{tenantId}/restore")
-    public ResponseEntity<Tenant> restoreCompany(@PathVariable String tenantId) {
-        return ResponseEntity.ok(companyService.restoreCompany(tenantId));
+    public ResponseEntity<?> restoreCompany(@PathVariable String tenantId) {
+        try {
+            return ResponseEntity.ok(companyService.restoreCompany(tenantId));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of(
+                "error", "Cannot restore company",
+                "message", e.getMessage(),
+                "tenantId", tenantId
+            ));
+        }
     }
 
     /**
@@ -262,11 +278,19 @@ public class AdminDashboardController {
      * WARNING: This is irreversible!
      */
     @DeleteMapping("/companies/{tenantId}/permanent")
-    public ResponseEntity<Map<String, Object>> permanentDeleteCompany(
+    public ResponseEntity<?> permanentDeleteCompany(
             @PathVariable String tenantId,
             Authentication auth) {
-        String deletedBy = auth != null ? auth.getName() : "SUPER_ADMIN";
-        return ResponseEntity.ok(companyService.permanentDeleteCompany(tenantId, deletedBy));
+        try {
+            String deletedBy = auth != null ? auth.getName() : "SUPER_ADMIN";
+            return ResponseEntity.ok(companyService.permanentDeleteCompany(tenantId, deletedBy));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of(
+                "error", "Cannot permanently delete company",
+                "message", e.getMessage(),
+                "tenantId", tenantId
+            ));
+        }
     }
 
     // ==================== REQUEST RECORDS ====================
