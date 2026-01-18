@@ -300,6 +300,10 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
         int total = 0, success = 0, failed = 0;
         Set<Long> affectedEmployeeIds = new HashSet<>();
         YearMonth ymUsed = ymFromParams;
+        
+        // Batch collection for performance - save all at once instead of individually
+        List<AttendancePunch> punchBatch = new ArrayList<>();
+        List<ImportError> errorBatch = new ArrayList<>();
 
         try (Workbook wb = WorkbookFactory.create(file.getInputStream())) {
             // Find the "Logs" sheet
@@ -395,7 +399,7 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
 
                 if (employeeId == null) {
                     failed++;
-                    errorRepo.save(ImportError.builder()
+                    errorBatch.add(ImportError.builder()
                             .batchId(batch.getId())
                             .rowNum(rowIdx + 1)
                             .columnName("C")
@@ -470,12 +474,12 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
                                         .importBatchId(batch.getId())
                                         .build();
 
-                                punchRepo.save(p);
+                                punchBatch.add(p);
                                 dayPunches.add(new PunchInfo(lt, punchType, isCrossMidnightOut));
                                 success++;
                             } catch (Exception ex) {
                                 failed++;
-                                errorRepo.save(ImportError.builder()
+                                errorBatch.add(ImportError.builder()
                                         .batchId(batch.getId())
                                         .rowNum(rowIdx + 2)
                                         .columnName(colLetter(dayCol))
@@ -493,17 +497,32 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
 
         } catch (Exception e) {
             throw new RuntimeException("Failed to parse Excel: " + e.getMessage(), e);
-        } finally {
-            batch.setTotalRows(total);
-            batch.setSuccessRows(success);
-            batch.setErrorRows(failed);
-            batchRepo.save(batch);
         }
+        
+        // Batch save all punches at once for performance (instead of 1922 individual saves)
+        if (!punchBatch.isEmpty()) {
+            log.info("💾 Batch saving {} punch records...", punchBatch.size());
+            punchRepo.saveAll(punchBatch);
+            log.info("✅ Punch records saved successfully");
+        }
+        
+        // Batch save all errors
+        if (!errorBatch.isEmpty()) {
+            errorRepo.saveAll(errorBatch);
+        }
+        
+        // Update batch stats
+        batch.setTotalRows(total);
+        batch.setSuccessRows(success);
+        batch.setErrorRows(failed);
+        batchRepo.save(batch);
 
         // Recompute attendance sessions and day rollups
+        log.info("🔄 Rebuilding attendance for {} employees...", affectedEmployeeIds.size());
         for (Long empId : affectedEmployeeIds) {
             attendanceEngine.rebuildEmployeeMonth(orgId, empId, ymUsed);
         }
+        log.info("✅ Attendance rebuild complete");
 
         String message;
         if (failed == 0 && success > 0) {
