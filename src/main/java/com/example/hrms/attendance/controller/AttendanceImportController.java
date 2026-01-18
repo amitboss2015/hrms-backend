@@ -211,7 +211,7 @@ public class AttendanceImportController {
      * Recalculate attendance for a specific month/year.
      * This rebuilds all attendance sessions and day rollups from raw punches.
      */
-    @PostMapping("/recalculate")
+    @PostMapping("/import/recalculate")
     @Transactional
     public ResponseEntity<Map<String, Object>> recalculateAttendance(
             @RequestParam("month") int month,
