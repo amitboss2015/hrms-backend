@@ -73,4 +73,11 @@ public interface TenantRepository extends JpaRepository<Tenant, String> {
      */
     @Query("SELECT COUNT(t) FROM Tenant t WHERE t.deleted = true")
     long countDeleted();
+    
+    /**
+     * Check if a company with the same name already exists (case-insensitive)
+     * Excludes deleted tenants
+     */
+    @Query("SELECT CASE WHEN COUNT(t) > 0 THEN true ELSE false END FROM Tenant t WHERE LOWER(t.name) = LOWER(:name) AND (t.deleted = false OR t.deleted IS NULL)")
+    boolean existsByNameIgnoreCase(@Param("name") String name);
 }

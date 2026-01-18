@@ -9,6 +9,7 @@ import com.example.hrms.attendance.domain.AttendancePunch;
 import com.example.hrms.domain.Employee;
 import com.example.hrms.repo.EmployeeRepository;
 import com.example.hrms.repo.ShiftRepository;
+import com.example.hrms.tenant.TenantContext;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -30,12 +31,26 @@ public class AttendanceQueryServiceImpl implements AttendanceQueryService {
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm");
     private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ISO_LOCAL_DATE;
 
+    /**
+     * Legacy non-tenant-aware version - delegates to tenant-aware version
+     */
     @Override
     public List<DailyPunchLogDTO> getEmployeeLogs(Long orgId, Long employeeId, String empCode, int month, int year) {
+        return getEmployeeLogs(orgId, null, employeeId, empCode, month, year);
+    }
+    
+    /**
+     * Tenant-aware version - filters employees by tenant
+     */
+    @Override
+    public List<DailyPunchLogDTO> getEmployeeLogs(Long orgId, String tenantId, Long employeeId, String empCode, int month, int year) {
         // Resolve employeeId from empCode if needed
         Long empId = employeeId;
         if (empId == null && empCode != null && !empCode.isBlank()) {
-            empId = employeeRepo.findByEmpCode(empCode)
+            // Use tenant-aware lookup if tenantId provided
+            empId = (tenantId != null 
+                    ? employeeRepo.findByTenantIdAndEmpCode(tenantId, empCode)
+                    : employeeRepo.findByEmpCode(empCode))
                     .map(Employee::getId)
                     .orElse(null);
         }
@@ -178,13 +193,17 @@ public class AttendanceQueryServiceImpl implements AttendanceQueryService {
                     builder.roundedOut(dayRecord.getRoundedOut().toLocalTime().format(TIME_FMT));
                 }
                 
-                // Get shift timings for reference
+                // Get shift timings for reference (tenant-aware lookup)
                 if (dayRecord.getShiftCodes() != null && !dayRecord.getShiftCodes().isBlank()) {
                     String primaryShiftCode = dayRecord.getShiftCodes().split(",")[0];
-                    shiftRepo.findByCode(primaryShiftCode).ifPresent(shift -> {
-                        builder.shiftStartTime(shift.getStartTime().format(TIME_FMT));
-                        builder.shiftEndTime(shift.getEndTime().format(TIME_FMT));
-                    });
+                    String currentTenantId = tenantId != null ? tenantId : TenantContext.getTenantId();
+                    (currentTenantId != null 
+                        ? shiftRepo.findByTenantIdAndCode(currentTenantId, primaryShiftCode)
+                        : shiftRepo.findByTenantIdAndCode("ORG001", primaryShiftCode))
+                        .ifPresent(shift -> {
+                            builder.shiftStartTime(shift.getStartTime().format(TIME_FMT));
+                            builder.shiftEndTime(shift.getEndTime().format(TIME_FMT));
+                        });
                 }
                 
                 // Update highlight reason to include late/early

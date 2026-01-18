@@ -45,9 +45,9 @@ public class AttendanceQueryController {
             @RequestParam(required = false) Long empId,
             @RequestParam(required = false) String empCode) {
 
-        // Use default orgId=1L for now (single tenant mode)
-        Long orgId = 1L;
-        return ResponseEntity.ok(service.getEmployeeLogs(orgId, empId, empCode, month, year));
+        String tenantId = TenantContext.getTenantId();
+        Long orgId = getOrgIdFromTenant(tenantId);
+        return ResponseEntity.ok(service.getEmployeeLogs(orgId, tenantId, empId, empCode, month, year));
     }
 
     /**
@@ -59,8 +59,8 @@ public class AttendanceQueryController {
             @RequestParam int month,
             @RequestParam int year) {
         
-        // Use default orgId=1L for now (single tenant mode)
-        Long orgId = 1L;
+        String tenantId = TenantContext.getTenantId();
+        Long orgId = getOrgIdFromTenant(tenantId);
         return ResponseEntity.ok(summaryService.getSummary(year, month, orgId));
     }
 
@@ -93,9 +93,19 @@ public class AttendanceQueryController {
             @RequestParam int month, 
             @RequestParam int year) {
 
-        // Use default orgId=1L for now (single tenant mode)
-        Long orgId = 1L;
+        String tenantId = TenantContext.getTenantId();
+        Long orgId = getOrgIdFromTenant(tenantId);
         return ResponseEntity.ok(service.getMonthlySummary(orgId, month, year));
+    }
+    
+    /**
+     * Convert tenant ID (String) to org ID (Long) for multi-tenancy.
+     */
+    private Long getOrgIdFromTenant(String tenantId) {
+        if (tenantId == null || tenantId.isEmpty()) {
+            return 1L;
+        }
+        return (long) Math.abs(tenantId.hashCode()) + 10000L;
     }
 
     private String safeName(Employee e) {

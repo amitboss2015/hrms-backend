@@ -19,12 +19,10 @@ public class EmployeeDTO {
     private String empCode;
 
     @NotBlank(message = "First name is required")
-    @Size(min = 2, max = 50, message = "First name must be between 2 and 50 characters")
-    @Pattern(regexp = "^[A-Za-z\\s.'-]+$", message = "First name can only contain letters, spaces, dots, apostrophes and hyphens")
+    @Size(min = 1, max = 100, message = "First name must be between 1 and 100 characters")
     private String firstName;
 
-    @Size(max = 50, message = "Last name must be less than 50 characters")
-    @Pattern(regexp = "^[A-Za-z\\s.'-]*$", message = "Last name can only contain letters, spaces, dots, apostrophes and hyphens")
+    @Size(max = 100, message = "Last name must be less than 100 characters")
     private String lastName;
 
     @Pattern(regexp = "^$|^[6-9]\\d{9}$", message = "Phone number must be a valid 10-digit Indian mobile number starting with 6-9")
@@ -240,10 +238,16 @@ public class EmployeeDTO {
     public void setEmpCode(String empCode) { this.empCode = empCode; }
     
     public String getFirstName() { return firstName; }
-    public void setFirstName(String firstName) { this.firstName = firstName; }
+    public void setFirstName(String firstName) { 
+        // Normalize whitespace: trim and collapse multiple spaces/tabs
+        this.firstName = firstName != null ? firstName.replaceAll("[\\s\\t]+", " ").trim() : null; 
+    }
     
     public String getLastName() { return lastName; }
-    public void setLastName(String lastName) { this.lastName = lastName; }
+    public void setLastName(String lastName) { 
+        // Normalize whitespace: trim and collapse multiple spaces/tabs
+        this.lastName = lastName != null ? lastName.replaceAll("[\\s\\t]+", " ").trim() : null; 
+    }
     
     public String getPhone() { return phone; }
     public void setPhone(String phone) { this.phone = phone; }

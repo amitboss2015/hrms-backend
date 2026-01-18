@@ -74,4 +74,16 @@ public interface AttendanceDayRepository extends JpaRepository<AttendanceDay, Lo
      * Check if attendance exists for tenant, employee and date
      */
     boolean existsByTenantIdAndEmployeeIdAndWorkDate(String tenantId, Long empId, LocalDate workDate);
+    
+    /**
+     * Find by tenant, employee ID and work date (single entry)
+     */
+    java.util.Optional<AttendanceDay> findByTenantIdAndEmployeeIdAndWorkDateAndShiftCodes(
+        String tenantId, Long empId, LocalDate workDate, String shiftCodes);
+    
+    /**
+     * Find single attendance entry
+     */
+    java.util.Optional<AttendanceDay> findFirstByTenantIdAndEmployeeIdAndWorkDate(
+        String tenantId, Long empId, LocalDate workDate);
 }

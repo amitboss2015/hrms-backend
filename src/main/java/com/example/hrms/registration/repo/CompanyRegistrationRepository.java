@@ -33,4 +33,9 @@ public interface CompanyRegistrationRepository extends JpaRepository<CompanyRegi
      * Find pending (not activated) registration by email
      */
     Optional<CompanyRegistration> findByEmailAndActivatedFalse(String email);
+    
+    /**
+     * Find activated registration by email
+     */
+    Optional<CompanyRegistration> findByEmailAndActivatedTrue(String email);
 }

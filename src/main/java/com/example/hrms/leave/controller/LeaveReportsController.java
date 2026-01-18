@@ -4,6 +4,7 @@ import com.example.hrms.domain.Employee;
 import com.example.hrms.leave.domain.EmployeeLeave;
 import com.example.hrms.leave.repo.EmployeeLeaveRepository;
 import com.example.hrms.repo.EmployeeRepository;
+import com.example.hrms.tenant.TenantContext;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDate;
@@ -21,6 +22,14 @@ public class LeaveReportsController {
     public LeaveReportsController(EmployeeLeaveRepository leaveRepo, EmployeeRepository employeeRepo) {
         this.leaveRepo = leaveRepo;
         this.employeeRepo = employeeRepo;
+    }
+    
+    // Helper to find employee using tenant-aware lookup
+    private Optional<Employee> findEmployee(String empCode) {
+        String tenantId = TenantContext.getTenantId();
+        return tenantId != null 
+            ? employeeRepo.findByTenantIdAndEmpCode(tenantId, empCode)
+            : employeeRepo.findByEmpCode(empCode);
     }
 
     /**
@@ -47,7 +56,7 @@ public class LeaveReportsController {
         
         Map<String, Employee> empMap = new HashMap<>();
         for (String empId : empIds) {
-            employeeRepo.findByEmpCode(empId).ifPresent(e -> empMap.put(empId, e));
+            findEmployee(empId).ifPresent(e -> empMap.put(empId, e));
         }
 
         return leaves.stream().map(leave -> {
@@ -135,7 +144,7 @@ public class LeaveReportsController {
         
         Map<String, Employee> empMap = new HashMap<>();
         for (String empId : empIds) {
-            employeeRepo.findByEmpCode(empId).ifPresent(e -> empMap.put(empId, e));
+            findEmployee(empId).ifPresent(e -> empMap.put(empId, e));
         }
 
         // Build daily summary

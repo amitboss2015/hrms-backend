@@ -1,11 +1,14 @@
 package com.example.hrms.attendance.service.impl;
 
 import com.example.hrms.attendance.domain.*;
+import com.example.hrms.attendance.dto.AttendanceImportPreview;
 import com.example.hrms.attendance.dto.ImportResultDTO;
 import com.example.hrms.attendance.repo.*;
 import com.example.hrms.attendance.service.AttendanceImportService;
 import com.example.hrms.attendance.service.AttendanceEngine;
+import com.example.hrms.domain.Employee;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.poi.ss.usermodel.*;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -17,6 +20,7 @@ import java.util.*;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class AttendanceImportServiceImpl implements AttendanceImportService {
 
     private final AttendancePunchRepository punchRepo;
@@ -30,10 +34,243 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
     // Threshold for considering a punch as cross-midnight (before this hour = likely OUT from previous day)
     private static final int CROSS_MIDNIGHT_THRESHOLD_HOUR = 6;
 
+    /**
+     * Preview the attendance file before importing.
+     * Parses the file without saving anything, shows what will be imported.
+     * This is the legacy non-tenant-aware version - forwards to tenant-aware version with null.
+     */
+    @Override
+    public AttendanceImportPreview previewImport(Long orgId, MultipartFile file, int month, int year) {
+        return previewImport(orgId, null, file, month, year);
+    }
+    
+    /**
+     * Preview the attendance file before importing (tenant-aware version).
+     * Parses the file without saving anything, shows what will be imported.
+     */
+    @Override
+    public AttendanceImportPreview previewImport(Long orgId, String tenantId, MultipartFile file, int month, int year) {
+        log.info("Preview import for org={}, tenant={}, month={}, year={}", orgId, tenantId, month, year);
+        
+        YearMonth ymFromParams = YearMonth.of(year, month);
+        
+        // Check for duplicate upload
+        List<ImportBatch> existingBatches = batchRepo.findByOrgIdAndMonthAndYear(orgId, month, year);
+        if (!existingBatches.isEmpty()) {
+            ImportBatch existing = existingBatches.get(0);
+            return AttendanceImportPreview.duplicate(
+                existing.getId(), 
+                existing.getUploadedAt().toString(),
+                month, year
+            );
+        }
+        
+        try (Workbook wb = WorkbookFactory.create(file.getInputStream())) {
+            Sheet sh = findLogsSheet(wb);
+            DataFormatter fmt = new DataFormatter();
+            
+            // Parse period from first few rows
+            YearMonth ymUsed = ymFromParams;
+            for (int r = 0; r <= 3; r++) {
+                Row row = sh.getRow(r);
+                if (row == null) continue;
+                for (int c = 0; c <= 5; c++) {
+                    String cell = readCell(row, c, fmt);
+                    if (cell.contains("~") || cell.contains("–")) {
+                        YearMonth ym = parseYearMonthFromPeriod(cell);
+                        if (ym != null) {
+                            ymUsed = ym;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            int daysInMonth = ymUsed.lengthOfMonth();
+            List<AttendanceImportPreview.EmployeeMatch> employeeMatches = new ArrayList<>();
+            List<AttendanceImportPreview.SampleRow> sampleRows = new ArrayList<>();
+            Map<Integer, Integer> punchesPerDay = new HashMap<>();
+            int totalPunchRecords = 0;
+            Set<Integer> daysWithDataSet = new HashSet<>();
+            
+            // Find first employee block
+            int rowIdx = 0;
+            while (rowIdx < sh.getLastRowNum()) {
+                Row row = sh.getRow(rowIdx);
+                if (row != null) {
+                    String firstCell = readCell(row, 0, fmt).toLowerCase();
+                    if (firstCell.startsWith("no") && firstCell.contains(":")) {
+                        break;
+                    }
+                }
+                rowIdx++;
+            }
+            
+            // Parse employee blocks
+            int sampleCount = 0;
+            while (rowIdx < sh.getLastRowNum()) {
+                Row metaRow = sh.getRow(rowIdx);
+                Row punchRow = sh.getRow(rowIdx + 1);
+                
+                if (metaRow == null) {
+                    rowIdx++;
+                    continue;
+                }
+                
+                String firstCell = readCell(metaRow, 0, fmt);
+                if (!firstCell.toLowerCase().startsWith("no")) {
+                    rowIdx++;
+                    continue;
+                }
+                
+                // Extract employee code
+                String empCodeRaw = readCell(metaRow, 2, fmt);
+                
+                // Find employee name
+                String empName = "";
+                for (int c = 8; c <= 12; c++) {
+                    String cell = readCell(metaRow, c, fmt);
+                    if (cell.toLowerCase().contains("name")) {
+                        for (int nc = c + 1; nc <= c + 3; nc++) {
+                            String nameVal = readCell(metaRow, nc, fmt);
+                            if (!isBlank(nameVal) && !nameVal.toLowerCase().contains(":")) {
+                                empName = nameVal;
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                }
+                if (isBlank(empName)) {
+                    empName = readCell(metaRow, 10, fmt);
+                }
+                
+                if (isBlank(empCodeRaw)) {
+                    rowIdx += 2;
+                    continue;
+                }
+                
+                String empCode = normalizeEmpCode(empCodeRaw);
+                // Use tenant-aware lookup if tenantId provided, otherwise fallback to global lookup
+                Optional<Employee> matchedEmployee = tenantId != null 
+                    ? employeeRepo.findByTenantIdAndEmpCode(tenantId, empCode)
+                    : employeeRepo.findByEmpCode(empCode);
+                
+                // Count punches for this employee
+                int empPunchCount = 0;
+                List<AttendanceImportPreview.DayPunches> dayPunchesList = new ArrayList<>();
+                
+                if (punchRow != null) {
+                    for (int dayCol = 0; dayCol < daysInMonth; dayCol++) {
+                        String cellVal = readCell(punchRow, dayCol, fmt);
+                        if (isBlank(cellVal)) continue;
+                        
+                        String[] times = cellVal.split("\\r?\\n");
+                        List<String> validTimes = new ArrayList<>();
+                        
+                        for (String rawTime : times) {
+                            if (rawTime == null) continue;
+                            rawTime = rawTime.trim();
+                            if (rawTime.isEmpty()) continue;
+                            
+                            LocalTime lt = parseTimeSafe(rawTime);
+                            if (lt != null) {
+                                validTimes.add(rawTime);
+                                empPunchCount++;
+                                totalPunchRecords++;
+                                daysWithDataSet.add(dayCol + 1);
+                                punchesPerDay.merge(dayCol + 1, 1, Integer::sum);
+                            }
+                        }
+                        
+                        // For sample rows, collect first 7 days
+                        if (sampleCount < 5 && dayCol < 7 && !validTimes.isEmpty()) {
+                            String status = validTimes.size() >= 2 ? "PRESENT" : "ONLY_IN";
+                            dayPunchesList.add(AttendanceImportPreview.DayPunches.builder()
+                                    .dayOfMonth(dayCol + 1)
+                                    .punches(validTimes)
+                                    .status(status)
+                                    .build());
+                        }
+                    }
+                }
+                
+                // Add employee match
+                AttendanceImportPreview.EmployeeMatch match = AttendanceImportPreview.EmployeeMatch.builder()
+                        .empCodeInFile(empCodeRaw)
+                        .nameInFile(empName)
+                        .matched(matchedEmployee.isPresent())
+                        .matchedEmployeeId(matchedEmployee.map(Employee::getId).orElse(null))
+                        .matchedEmpCode(matchedEmployee.map(Employee::getEmpCode).orElse(null))
+                        .matchedName(matchedEmployee.map(e -> e.getFirstName() + " " + (e.getLastName() != null ? e.getLastName() : "")).orElse(null))
+                        .punchCount(empPunchCount)
+                        .build();
+                employeeMatches.add(match);
+                
+                // Add sample row (first 5 employees only)
+                if (sampleCount < 5 && !dayPunchesList.isEmpty()) {
+                    sampleRows.add(AttendanceImportPreview.SampleRow.builder()
+                            .empCode(empCode)
+                            .name(empName)
+                            .days(dayPunchesList)
+                            .build());
+                    sampleCount++;
+                }
+                
+                rowIdx += 2;
+            }
+            
+            // Calculate summary
+            int matchedCount = (int) employeeMatches.stream().filter(AttendanceImportPreview.EmployeeMatch::isMatched).count();
+            int unmatchedCount = employeeMatches.size() - matchedCount;
+            
+            String periodStr = ymUsed.getMonth().toString() + " " + ymUsed.getYear();
+            
+            log.info("Preview complete: {} employees ({} matched, {} unmatched), {} punch records",
+                    employeeMatches.size(), matchedCount, unmatchedCount, totalPunchRecords);
+            
+            return AttendanceImportPreview.builder()
+                    .valid(true)
+                    .message("File parsed successfully. Ready to import.")
+                    .fileName(file.getOriginalFilename())
+                    .detectedFormat("BIOMETRIC_LOGS")
+                    .detectedPeriod(periodStr)
+                    .detectedMonth(ymUsed.getMonthValue())
+                    .detectedYear(ymUsed.getYear())
+                    .totalEmployeesInFile(employeeMatches.size())
+                    .matchedEmployees(matchedCount)
+                    .unmatchedEmployees(unmatchedCount)
+                    .employeeMatches(employeeMatches)
+                    .totalPunchRecords(totalPunchRecords)
+                    .daysWithData(daysWithDataSet.size())
+                    .punchesPerDay(punchesPerDay)
+                    .sampleRows(sampleRows)
+                    .duplicateExists(false)
+                    .build();
+                    
+        } catch (Exception e) {
+            log.error("Error previewing file: {}", e.getMessage(), e);
+            return AttendanceImportPreview.error("Failed to parse file: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Import attendance (legacy non-tenant-aware version)
+     */
     @Override
     @Transactional
     public ImportResultDTO importLogsExcel(Long orgId, MultipartFile file, int month, int year, String uploadedBy) {
+        return importLogsExcel(orgId, null, file, month, year, uploadedBy);
+    }
+    
+    /**
+     * Import attendance from biometric Excel file (tenant-aware version)
+     */
+    @Override
+    @Transactional
+    public ImportResultDTO importLogsExcel(Long orgId, String tenantId, MultipartFile file, int month, int year, String uploadedBy) {
         YearMonth ymFromParams = YearMonth.of(year, month);
+        log.info("Import attendance for org={}, tenant={}, month={}, year={}", orgId, tenantId, month, year);
 
         // Check for duplicate upload for same org, month, year
         List<ImportBatch> existingBatches = batchRepo.findByOrgIdAndMonthAndYear(orgId, month, year);
@@ -154,7 +391,7 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
                 }
 
                 String empCode = normalizeEmpCode(empCodeRaw);
-                Long employeeId = resolveEmployeeId(empCode);
+                Long employeeId = resolveEmployeeId(empCode, tenantId);
 
                 if (employeeId == null) {
                     failed++;
@@ -334,11 +571,13 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
         return s;
     }
 
-    private Long resolveEmployeeId(String empCode) {
+    private Long resolveEmployeeId(String empCode, String tenantId) {
         if (isBlank(empCode)) return null;
-        return employeeRepo.findByEmpCode(empCode)
-                .map(com.example.hrms.domain.Employee::getId)
-                .orElse(null);
+        // Use tenant-aware lookup if tenantId provided, otherwise fallback to global lookup
+        Optional<Employee> employee = tenantId != null 
+            ? employeeRepo.findByTenantIdAndEmpCode(tenantId, empCode)
+            : employeeRepo.findByEmpCode(empCode);
+        return employee.map(Employee::getId).orElse(null);
     }
 
     private YearMonth parseYearMonthFromPeriod(String period) {

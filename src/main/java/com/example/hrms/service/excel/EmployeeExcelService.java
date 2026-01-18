@@ -241,28 +241,93 @@ public class EmployeeExcelService {
 
             result.setTotalRows(rowNum - 1);
 
-            // Save valid employees
+            // Save valid employees one by one for better error tracking
             if (!employeesToSave.isEmpty()) {
-                List<Employee> saved = employeeRepo.saveAll(employeesToSave);
-                result.setSuccessCount(saved.size());
-                
-                for (Employee e : saved) {
-                    result.getImportedEmployees().add(EmployeeDTO.fromEntity(e));
+                int savedCount = 0;
+                for (int i = 0; i < employeesToSave.size(); i++) {
+                    Employee employee = employeesToSave.get(i);
+                    try {
+                        // Clean up the data before saving
+                        if (employee.getFirstName() != null) {
+                            // Remove newlines and trim
+                            employee.setFirstName(employee.getFirstName().replaceAll("[\\r\\n]+", " ").trim());
+                        }
+                        if (employee.getLastName() != null) {
+                            employee.setLastName(employee.getLastName().replaceAll("[\\r\\n]+", " ").trim());
+                        }
+                        if (employee.getEmpCode() != null) {
+                            employee.setEmpCode(employee.getEmpCode().replaceAll("[\\r\\n]+", " ").trim());
+                        }
+                        
+                        Employee saved = employeeRepo.save(employee);
+                        result.getImportedEmployees().add(EmployeeDTO.fromEntity(saved));
+                        savedCount++;
+                    } catch (Exception e) {
+                        // Extract meaningful error message
+                        String errorMsg = extractValidationError(e);
+                        result.addError(i + 2, employee.getEmpCode(), "Save", 
+                            String.format("Failed to save employee '%s': %s", 
+                                employee.getFirstName(), errorMsg));
+                    }
                 }
+                result.setSuccessCount(savedCount);
             }
 
             result.setErrorCount(result.getErrors().size());
-            result.setSuccess(result.getErrors().isEmpty());
+            result.setSuccess(result.getErrors().isEmpty() && result.getSuccessCount() > 0);
             
-            if (result.isSuccess()) {
+            if (result.getSuccessCount() > 0 && result.getErrors().isEmpty()) {
                 result.setMessage(String.format("Successfully imported %d employees", result.getSuccessCount()));
-            } else {
-                result.setMessage(String.format("Import completed with errors. Success: %d, Errors: %d, Skipped: %d",
+            } else if (result.getSuccessCount() > 0) {
+                result.setMessage(String.format("Import completed with some errors. Success: %d, Errors: %d, Skipped: %d",
                         result.getSuccessCount(), result.getErrorCount(), result.getSkippedCount()));
+            } else {
+                result.setMessage(String.format("Import failed. Errors: %d, Skipped: %d. Please check the errors below.",
+                        result.getErrorCount(), result.getSkippedCount()));
             }
 
             return result;
         }
+    }
+    
+    /**
+     * Extract a user-friendly error message from validation exceptions
+     */
+    private String extractValidationError(Exception e) {
+        String message = e.getMessage();
+        Throwable cause = e.getCause();
+        
+        // Look for constraint violation messages
+        while (cause != null) {
+            String causeMsg = cause.getMessage();
+            if (causeMsg != null) {
+                // Check for validation constraint violations
+                if (causeMsg.contains("interpolatedMessage=")) {
+                    // Extract the actual message
+                    int start = causeMsg.indexOf("interpolatedMessage='") + 21;
+                    int end = causeMsg.indexOf("'", start);
+                    if (start > 20 && end > start) {
+                        return causeMsg.substring(start, end);
+                    }
+                }
+                // Check for SQL constraint violations
+                if (causeMsg.contains("Duplicate entry")) {
+                    return "Duplicate employee code - this code already exists";
+                }
+                if (causeMsg.contains("cannot be null")) {
+                    return "Required field is missing";
+                }
+                message = causeMsg;
+            }
+            cause = cause.getCause();
+        }
+        
+        // Clean up the message
+        if (message != null && message.length() > 200) {
+            message = message.substring(0, 200) + "...";
+        }
+        
+        return message != null ? message : "Unknown error";
     }
 
     private Map<String, Integer> parseHeaderRow(Row headerRow) {

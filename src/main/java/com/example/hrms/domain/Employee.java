@@ -25,20 +25,17 @@ public class Employee {
     private String tenantId;
 
     @NotBlank(message = "Employee code is required")
-    @Size(min = 1, max = 20, message = "Employee code must be between 1 and 20 characters")
-    @Pattern(regexp = "^[A-Za-z0-9_-]+$", message = "Employee code can only contain letters, numbers, underscores and hyphens")
-    @Column(name = "emp_code", nullable = false, length = 20)
+    @Size(min = 1, max = 50, message = "Employee code must be between 1 and 50 characters")
+    @Column(name = "emp_code", nullable = false, length = 50)
     private String empCode;
 
     @NotBlank(message = "First name is required")
-    @Size(min = 2, max = 50, message = "First name must be between 2 and 50 characters")
-    @Pattern(regexp = "^[A-Za-z\\s.'-]+$", message = "First name can only contain letters, spaces, dots, apostrophes and hyphens")
-    @Column(length = 50)
+    @Size(min = 1, max = 100, message = "First name must be between 1 and 100 characters")
+    @Column(length = 100)
     private String firstName;
 
-    @Size(max = 50, message = "Last name must be less than 50 characters")
-    @Pattern(regexp = "^[A-Za-z\\s.'-]*$", message = "Last name can only contain letters, spaces, dots, apostrophes and hyphens")
-    @Column(length = 50)
+    @Size(max = 100, message = "Last name must be less than 100 characters")
+    @Column(length = 100)
     private String lastName;
 
     @Enumerated(EnumType.STRING)

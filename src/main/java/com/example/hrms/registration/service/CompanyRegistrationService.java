@@ -58,6 +58,14 @@ public class CompanyRegistrationService {
      */
     public RegistrationResponse registerCompany(CompanyRegistrationRequest request, String ipAddress, String userAgent) {
         String email = request.getEmail().toLowerCase().trim();
+        String normalizedEmail = normalizeEmail(email);
+        String companyName = request.getCompanyName().trim();
+        
+        // ========== DUPLICATE COMPANY NAME CHECK ==========
+        // Check if company name already exists (case-insensitive)
+        if (tenantRepo.existsByNameIgnoreCase(companyName)) {
+            return RegistrationResponse.error("A company with this name already exists. Please use a different company name.");
+        }
         
         // ========== FRAUD DETECTION ==========
         // Check rate limiting first
@@ -85,15 +93,29 @@ public class CompanyRegistrationService {
         }
         // ========== END FRAUD DETECTION ==========
         
-        // Check if email already exists in users table
-        if (userRepo.existsByEmail(email)) {
-            fraudDetectionService.recordAttempt(email, request.getCompanyName(), 
+        // Check if email already exists in users table (check both original and normalized)
+        if (userRepo.existsByEmail(email) || (!email.equals(normalizedEmail) && userRepo.existsByEmail(normalizedEmail))) {
+            fraudDetectionService.recordAttempt(email, companyName, 
                 request.getPhone(), ipAddress, userAgent, false, "Email already exists");
             return RegistrationResponse.error("This email is already registered. Please login or use a different email.");
         }
         
-        // Check if there's a pending (non-activated) registration
+        // Check if there's an already activated registration with this email (check both original and normalized)
+        Optional<CompanyRegistration> existingActivated = registrationRepo.findByEmailAndActivatedTrue(email);
+        if (existingActivated.isEmpty() && !email.equals(normalizedEmail)) {
+            existingActivated = registrationRepo.findByEmailAndActivatedTrue(normalizedEmail);
+        }
+        if (existingActivated.isPresent()) {
+            fraudDetectionService.recordAttempt(email, companyName, 
+                request.getPhone(), ipAddress, userAgent, false, "Email already has activated company");
+            return RegistrationResponse.error("This email has already been used to register a company. Please login or use a different email.");
+        }
+        
+        // Check if there's a pending (non-activated) registration (check both original and normalized)
         Optional<CompanyRegistration> existingPending = registrationRepo.findByEmailAndActivatedFalse(email);
+        if (existingPending.isEmpty() && !email.equals(normalizedEmail)) {
+            existingPending = registrationRepo.findByEmailAndActivatedFalse(normalizedEmail);
+        }
         if (existingPending.isPresent()) {
             CompanyRegistration pending = existingPending.get();
             // If token expired, regenerate and resend
@@ -417,5 +439,35 @@ public class CompanyRegistrationService {
             log.error("Failed to create default shifts for tenant: {}", tenantId, e);
             // Don't fail activation if shift creation fails
         }
+    }
+    
+    /**
+     * Normalize email address to handle Gmail dot trick and other variations.
+     * Gmail ignores dots in the local part, so a.b@gmail.com = ab@gmail.com
+     * Also handles googlemail.com as gmail.com
+     */
+    private String normalizeEmail(String email) {
+        if (email == null) return null;
+        email = email.toLowerCase().trim();
+        
+        int atIndex = email.indexOf('@');
+        if (atIndex <= 0) return email;
+        
+        String localPart = email.substring(0, atIndex);
+        String domain = email.substring(atIndex + 1);
+        
+        // Handle Gmail variations
+        if (domain.equals("gmail.com") || domain.equals("googlemail.com")) {
+            // Remove dots from local part for Gmail
+            localPart = localPart.replace(".", "");
+            // Remove anything after + (plus addressing)
+            int plusIndex = localPart.indexOf('+');
+            if (plusIndex > 0) {
+                localPart = localPart.substring(0, plusIndex);
+            }
+            domain = "gmail.com"; // Normalize googlemail.com to gmail.com
+        }
+        
+        return localPart + "@" + domain;
     }
 }

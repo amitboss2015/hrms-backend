@@ -73,8 +73,12 @@ public class PayrollService {
      * Generate payroll for a single employee for a month
      */
     public Payroll generatePayroll(String orgId, String empId, int year, int month) {
-        Employee emp = employeeRepo.findByEmpCode(empId).orElseThrow(
-                () -> new IllegalArgumentException("Employee not found: " + empId));
+        // Use tenant-aware employee lookup to avoid cross-tenant issues
+        String tenantId = TenantContext.getTenantId();
+        Employee emp = (tenantId != null 
+                ? employeeRepo.findByTenantIdAndEmpCode(tenantId, empId)
+                : employeeRepo.findByEmpCode(empId))
+            .orElseThrow(() -> new IllegalArgumentException("Employee not found: " + empId));
 
         // Check if payroll already exists
         Optional<Payroll> existing = payrollRepo.findByOrgIdAndEmpIdAndYearAndMonth(orgId, empId, year, month);
@@ -823,7 +827,12 @@ public class PayrollService {
         LocalDate start = ym.atDay(1);
         LocalDate end = ym.atEndOfMonth();
 
-        Employee emp = employeeRepo.findByEmpCode(empId).orElse(null);
+        // Use tenant-aware employee lookup
+        String tenantId = TenantContext.getTenantId();
+        Employee emp = (tenantId != null 
+                ? employeeRepo.findByTenantIdAndEmpCode(tenantId, empId)
+                : employeeRepo.findByEmpCode(empId))
+            .orElse(null);
         if (emp == null) {
             return Map.of("available", false, "message", "Employee not found: " + empId);
         }

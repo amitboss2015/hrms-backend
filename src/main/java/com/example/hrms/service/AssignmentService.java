@@ -31,6 +31,8 @@ public class AssignmentService {
   @Transactional
   public List<EmployeeShiftAssignment> bulkAssign(List<Map<String,Object>> payload) {
     List<EmployeeShiftAssignment> result = new ArrayList<>();
+    String tenantId = TenantContext.getTenantId();
+    
     for (Map<String,Object> m : payload) {
       String empCode = (String) m.get("empCode");
       String shiftCode = (String) m.get("shiftCode");
@@ -41,10 +43,19 @@ public class AssignmentService {
       boolean primary = (Boolean) m.getOrDefault("primary", Boolean.TRUE);
       String remarks = (String) m.getOrDefault("remarks", null);
 
-      Employee emp = empRepo.findByEmpCode(empCode).orElseThrow(() -> new RuntimeException("Emp not found " + empCode));
+      // Use tenant-aware lookup for employee
+      Employee emp = (tenantId != null 
+          ? empRepo.findByTenantIdAndEmpCode(tenantId, empCode)
+          : empRepo.findByEmpCode(empCode))
+          .orElseThrow(() -> new RuntimeException("Emp not found " + empCode));
+          
+      // Use tenant-aware lookup for shift
       Shift shift = null;
       if (shiftCode != null) {
-        shift = shiftRepo.findByCode(shiftCode).orElseThrow(() -> new RuntimeException("Shift not found " + shiftCode));
+        shift = (tenantId != null 
+            ? shiftRepo.findByTenantIdAndCode(tenantId, shiftCode)
+            : shiftRepo.findByCode(shiftCode))
+            .orElseThrow(() -> new RuntimeException("Shift not found " + shiftCode));
       }
 
       EmployeeShiftAssignment a = new EmployeeShiftAssignment();

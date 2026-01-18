@@ -9,6 +9,7 @@ import com.example.hrms.loan.repo.LoanRepaymentRepository;
 import com.example.hrms.payroll.domain.Payroll;
 import com.example.hrms.payroll.repo.PayrollRepository;
 import com.example.hrms.repo.EmployeeRepository;
+import com.example.hrms.tenant.TenantContext;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -37,6 +38,14 @@ public class ReportService {
         this.payrollRepo = payrollRepo;
         this.loanRepo = loanRepo;
         this.repaymentRepo = repaymentRepo;
+    }
+    
+    // Helper to find employee using tenant-aware lookup
+    private Optional<Employee> findEmployee(String empCode) {
+        String tenantId = TenantContext.getTenantId();
+        return tenantId != null 
+            ? employeeRepo.findByTenantIdAndEmpCode(tenantId, empCode)
+            : employeeRepo.findByEmpCode(empCode);
     }
 
     // =========== ATTENDANCE REPORTS ===========
@@ -340,7 +349,7 @@ public class ReportService {
                 .orElse(null);
         if (payroll == null) return null;
 
-        Employee emp = employeeRepo.findByEmpCode(empId).orElse(null);
+        Employee emp = findEmployee(empId).orElse(null);
         if (emp == null) return null;
 
         Map<String, Object> payslip = new LinkedHashMap<>();

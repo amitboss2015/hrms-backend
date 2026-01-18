@@ -7,6 +7,7 @@ import com.example.hrms.loan.domain.enums.LoanStatus;
 import com.example.hrms.loan.repo.LoanRepository;
 import com.example.hrms.loan.repo.LoanRepaymentRepository;
 import com.example.hrms.repo.EmployeeRepository;
+import com.example.hrms.tenant.TenantContext;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
@@ -29,6 +30,14 @@ public class LoanReportsController {
         this.loanRepo = loanRepo;
         this.repaymentRepo = repaymentRepo;
         this.employeeRepo = employeeRepo;
+    }
+    
+    // Helper to find employee using tenant-aware lookup
+    private Optional<Employee> findEmployee(String empCode) {
+        String tenantId = TenantContext.getTenantId();
+        return tenantId != null 
+            ? employeeRepo.findByTenantIdAndEmpCode(tenantId, empCode)
+            : employeeRepo.findByEmpCode(empCode);
     }
 
     /**
@@ -106,7 +115,7 @@ public class LoanReportsController {
         Set<String> empIds = activeLoans.stream().map(Loan::getEmpId).collect(Collectors.toSet());
         Map<String, Employee> empMap = new HashMap<>();
         for (String empId : empIds) {
-            employeeRepo.findByEmpCode(empId).ifPresent(e -> empMap.put(empId, e));
+            findEmployee(empId).ifPresent(e -> empMap.put(empId, e));
         }
         
         return activeLoans.stream().map(loan -> {
@@ -141,7 +150,7 @@ public class LoanReportsController {
             @PathVariable String empId) {
         
         List<Loan> loans = loanRepo.findByOrgIdAndEmpIdOrderBySanctionDateDesc(orgId, empId);
-        Employee emp = employeeRepo.findByEmpCode(empId).orElse(null);
+        Employee emp = findEmployee(empId).orElse(null);
         
         Map<String, Object> report = new LinkedHashMap<>();
         report.put("empId", empId);
@@ -209,7 +218,7 @@ public class LoanReportsController {
         Set<String> empIds = activeLoans.stream().map(Loan::getEmpId).collect(Collectors.toSet());
         Map<String, Employee> empMap = new HashMap<>();
         for (String empId : empIds) {
-            employeeRepo.findByEmpCode(empId).ifPresent(e -> empMap.put(empId, e));
+            findEmployee(empId).ifPresent(e -> empMap.put(empId, e));
         }
         
         // Group by employee
@@ -253,7 +262,7 @@ public class LoanReportsController {
         }
         
         List<LoanRepayment> repayments = repaymentRepo.findByLoanIdOrderByEmiNumberAsc(loanId);
-        Employee emp = employeeRepo.findByEmpCode(loan.getEmpId()).orElse(null);
+        Employee emp = findEmployee(loan.getEmpId()).orElse(null);
         
         Map<String, Object> report = new LinkedHashMap<>();
         report.put("loanId", loan.getId());
@@ -311,7 +320,7 @@ public class LoanReportsController {
             loanRepo.findById(loanId).ifPresent(loan -> {
                 if (loan.getOrgId().equals(orgId)) {
                     loanMap.put(loanId, loan);
-                    employeeRepo.findByEmpCode(loan.getEmpId()).ifPresent(e -> empMap.put(loan.getEmpId(), e));
+                    findEmployee(loan.getEmpId()).ifPresent(e -> empMap.put(loan.getEmpId(), e));
                 }
             });
         }

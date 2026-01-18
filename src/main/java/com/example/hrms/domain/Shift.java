@@ -1,6 +1,7 @@
 package com.example.hrms.domain;
 
 import com.example.hrms.domain.enums.RoundingRule;
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.*;
 import java.time.LocalDate;
@@ -27,12 +28,16 @@ public class Shift {
     @Column(nullable = false)
     private String name;
 
+    // Accept both "start_time" and "startTime" for input, output as "start_time"
     @Column(nullable = false)
     @JsonProperty("start_time")
+    @JsonAlias({"startTime", "start_time"})
     private LocalTime startTime;
 
+    // Accept both "end_time" and "endTime" for input, output as "end_time"
     @Column(nullable = false)
     @JsonProperty("end_time")
+    @JsonAlias({"endTime", "end_time"})
     private LocalTime endTime;
 
     private Integer breakMins = 0;

@@ -74,6 +74,11 @@ public class AttendanceEngineImpl implements AttendanceEngine {
 
     @Transactional
     public void rebuildEmployeeDate(Long orgId, Long employeeId, LocalDate date) {
+        // Get tenant ID from employee record for proper multi-tenancy
+        String tenantId = employeeRepo.findById(employeeId)
+                .map(Employee::getTenantId)
+                .orElse(null);
+        
         // Figure out how far past midnight we should still attribute to 'date'
         int boundaryMins = Math.max(BOUNDARY_FLOOR_MIN, maxBoundaryAfterMidnight(employeeId, date));
 
@@ -103,6 +108,7 @@ public class AttendanceEngineImpl implements AttendanceEngine {
             // If it's a weekly off or holiday, still create an AttendanceDay record
             if (holidayInfo.isWeeklyOff || holidayInfo.isHoliday) {
                 AttendanceDay ad = AttendanceDay.builder()
+                        .tenantId(tenantId)
                         .orgId(orgId)
                         .employeeId(employeeId)
                         .workDate(date)
@@ -414,6 +420,7 @@ public class AttendanceEngineImpl implements AttendanceEngine {
         // replace the AttendanceDay for this date
         dayRepo.deleteAll(dayRepo.findByEmployeeIdAndWorkDateBetween(employeeId, date, date));
         AttendanceDay ad = AttendanceDay.builder()
+                .tenantId(tenantId)
                 .orgId(orgId)
                 .employeeId(employeeId)
                 .workDate(date)

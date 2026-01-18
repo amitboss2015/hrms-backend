@@ -8,6 +8,7 @@ import com.example.hrms.loan.domain.enums.LoanType;
 import com.example.hrms.loan.domain.enums.RepaymentMode;
 import com.example.hrms.loan.service.LoanService;
 import com.example.hrms.repo.EmployeeRepository;
+import com.example.hrms.tenant.TenantContext;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -26,6 +27,14 @@ public class LoanController {
     public LoanController(LoanService loanService, EmployeeRepository employeeRepo) {
         this.loanService = loanService;
         this.employeeRepo = employeeRepo;
+    }
+    
+    // Helper to find employee using tenant-aware lookup
+    private Optional<Employee> findEmployee(String empCode) {
+        String tenantId = TenantContext.getTenantId();
+        return tenantId != null 
+            ? employeeRepo.findByTenantIdAndEmpCode(tenantId, empCode)
+            : employeeRepo.findByEmpCode(empCode);
     }
 
     /**
@@ -54,7 +63,7 @@ public class LoanController {
         Map<String, Employee> empMap = new HashMap<>();
         for (Loan loan : loans) {
             if (!empMap.containsKey(loan.getEmpId())) {
-                employeeRepo.findByEmpCode(loan.getEmpId()).ifPresent(e -> empMap.put(loan.getEmpId(), e));
+                findEmployee(loan.getEmpId()).ifPresent(e -> empMap.put(loan.getEmpId(), e));
             }
         }
         
@@ -96,7 +105,7 @@ public class LoanController {
         }
         
         Loan loan = loanOpt.get();
-        Employee emp = employeeRepo.findByEmpCode(loan.getEmpId()).orElse(null);
+        Employee emp = findEmployee(loan.getEmpId()).orElse(null);
         
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("id", loan.getId());
@@ -132,8 +141,8 @@ public class LoanController {
             loan.setOrgId((String) request.getOrDefault("orgId", "1"));
             loan.setEmpId((String) request.get("empId"));
             
-            // Validate employee exists
-            if (employeeRepo.findByEmpCode(loan.getEmpId()).isEmpty()) {
+            // Validate employee exists (tenant-aware lookup)
+            if (findEmployee(loan.getEmpId()).isEmpty()) {
                 return ResponseEntity.badRequest().body(Map.of("error", "Employee not found: " + loan.getEmpId()));
             }
             
@@ -243,7 +252,7 @@ public class LoanController {
                                                     @PathVariable String empId) {
         BigDecimal monthlyEmi = loanService.getMonthlyEmiDeduction(orgId, empId);
         List<Loan> activeLoans = loanService.getActiveLoans(orgId, empId);
-        Employee emp = employeeRepo.findByEmpCode(empId).orElse(null);
+        Employee emp = findEmployee(empId).orElse(null);
         
         return Map.of(
                 "empId", empId,

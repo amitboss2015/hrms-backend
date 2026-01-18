@@ -54,12 +54,13 @@ public class ShiftService {
      */
     @Transactional
     public Shift upsert(Shift s) {
-        String tenantId = TenantContext.getTenantIdOrDefault("ORG001");
-        
-        // Set tenant ID if not already set
-        if (s.getTenantId() == null || s.getTenantId().isEmpty()) {
-            s.setTenantId(tenantId);
+        String tenantId = TenantContext.getTenantId();
+        if (tenantId == null || tenantId.isEmpty()) {
+            tenantId = "ORG001"; // Default only for backward compatibility
         }
+        
+        // Always set tenant ID from context - don't trust client input
+        s.setTenantId(tenantId);
         
         return repo.findByTenantIdAndCode(tenantId, s.getCode()).map(cur -> {
             cur.setName(s.getName()); 

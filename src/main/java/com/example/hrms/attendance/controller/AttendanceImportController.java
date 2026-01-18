@@ -2,6 +2,7 @@ package com.example.hrms.attendance.controller;
 
 import com.example.hrms.attendance.domain.ImportBatch;
 import com.example.hrms.attendance.domain.ImportError;
+import com.example.hrms.attendance.dto.AttendanceImportPreview;
 import com.example.hrms.attendance.dto.ImportResultDTO;
 import com.example.hrms.attendance.repo.AttendanceDayRepository;
 import com.example.hrms.attendance.repo.AttendancePunchRepository;
@@ -9,9 +10,11 @@ import com.example.hrms.attendance.repo.AttendanceSessionRepository;
 import com.example.hrms.attendance.repo.ImportBatchRepository;
 import com.example.hrms.attendance.repo.ImportErrorRepository;
 import com.example.hrms.attendance.service.AttendanceEngine;
+import com.example.hrms.attendance.service.AttendanceExcelService;
 import com.example.hrms.attendance.service.AttendanceImportService;
 import com.example.hrms.tenant.TenantContext;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -29,6 +32,7 @@ import java.util.stream.Collectors;
 @RequestMapping("/api/attendance")
 @CrossOrigin(origins = "*", methods = {RequestMethod.GET, RequestMethod.POST, RequestMethod.DELETE, RequestMethod.OPTIONS})
 @RequiredArgsConstructor
+@Slf4j
 public class AttendanceImportController {
 
     private final AttendanceImportService importService;
@@ -38,6 +42,27 @@ public class AttendanceImportController {
     private final AttendancePunchRepository punchRepo;
     private final AttendanceSessionRepository sessionRepo;
     private final AttendanceDayRepository dayRepo;
+    private final AttendanceExcelService attendanceExcelService;
+
+    /**
+     * Preview attendance import before confirming.
+     * Parses the file and returns summary of what will be imported.
+     */
+    @PostMapping("/import/preview")
+    public ResponseEntity<AttendanceImportPreview> previewImport(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam("month") int month,
+            @RequestParam("year") int year) {
+        
+        String tenantId = TenantContext.getTenantId();
+        log.info("Preview import request: tenant={}, month={}, year={}, file={}", tenantId, month, year, file.getOriginalFilename());
+        
+        // Use tenant ID hash as org ID for multi-tenancy
+        Long orgId = getOrgIdFromTenant(tenantId);
+        AttendanceImportPreview preview = importService.previewImport(orgId, tenantId, file, month, year);
+        
+        return ResponseEntity.ok(preview);
+    }
 
     /**
      * Import attendance from biometric Excel file.
@@ -50,9 +75,12 @@ public class AttendanceImportController {
             @RequestParam("year") int year,
             @RequestHeader(value = "X-User", required = false) String uploadedBy) {
 
-        // Use default orgId=1L for now (single tenant mode)
-        Long orgId = 1L;
-        var result = importService.importLogsExcel(orgId, file, month, year, uploadedBy == null ? "admin" : uploadedBy);
+        String tenantId = TenantContext.getTenantId();
+        // Use tenant ID hash as org ID for multi-tenancy
+        Long orgId = getOrgIdFromTenant(tenantId);
+        log.info("Import request: tenant={}, orgId={}, month={}, year={}", tenantId, orgId, month, year);
+        
+        var result = importService.importLogsExcel(orgId, tenantId, file, month, year, uploadedBy == null ? "admin" : uploadedBy);
 
         // If not a duplicate, rebuild the org month
         if (!result.isDuplicate()) {
@@ -68,8 +96,8 @@ public class AttendanceImportController {
     @GetMapping("/import/batches")
     public ResponseEntity<List<Map<String, Object>>> listBatches() {
 
-        // Use default orgId=1L for now (single tenant mode)
-        Long orgId = 1L;
+        String tenantId = TenantContext.getTenantId();
+        Long orgId = getOrgIdFromTenant(tenantId);
         List<ImportBatch> batches = batchRepo.findByOrgIdOrderByUploadedAtDesc(orgId);
 
         List<Map<String, Object>> result = batches.stream().map(b -> {
@@ -96,8 +124,8 @@ public class AttendanceImportController {
             @RequestParam("month") int month,
             @RequestParam("year") int year) {
 
-        // Use default orgId=1L for now (single tenant mode)
-        Long orgId = 1L;
+        String tenantId = TenantContext.getTenantId();
+        Long orgId = getOrgIdFromTenant(tenantId);
         List<ImportBatch> existing = batchRepo.findByOrgIdAndMonthAndYear(orgId, month, year);
 
         Map<String, Object> result = new HashMap<>();
@@ -120,8 +148,8 @@ public class AttendanceImportController {
     public ResponseEntity<Map<String, Object>> deleteBatch(
             @PathVariable Long batchId) {
 
-        // Use default orgId=1L for now (single tenant mode)
-        Long orgId = 1L;
+        String tenantId = TenantContext.getTenantId();
+        Long orgId = getOrgIdFromTenant(tenantId);
 
         ImportBatch batch = batchRepo.findById(batchId).orElse(null);
         if (batch == null || !orgId.equals(batch.getOrgId())) {
@@ -189,8 +217,8 @@ public class AttendanceImportController {
             @RequestParam("month") int month,
             @RequestParam("year") int year) {
 
-        // Use default orgId=1L for now (single tenant mode)
-        Long orgId = 1L;
+        String tenantId = TenantContext.getTenantId();
+        Long orgId = getOrgIdFromTenant(tenantId);
         YearMonth ym = YearMonth.of(year, month);
 
         // Delete existing computed data
@@ -214,5 +242,50 @@ public class AttendanceImportController {
         result.put("message", "Recalculated attendance for " + rebuilt + " employees for " + ym);
         result.put("employeesProcessed", rebuilt);
         return ResponseEntity.ok(result);
+    }
+
+    // ==================== TEMPLATE DOWNLOAD ====================
+
+    /**
+     * Download the attendance import template for a specific month/year.
+     * The template is pre-filled with employee list and has the same format as biometric exports.
+     */
+    @GetMapping("/template/download")
+    public ResponseEntity<byte[]> downloadAttendanceTemplate(
+            @RequestParam(value = "month", required = false) Integer month,
+            @RequestParam(value = "year", required = false) Integer year) {
+        try {
+            String tenantId = TenantContext.getTenantId();
+            
+            // Default to current month/year if not provided
+            java.time.YearMonth ym = (month != null && year != null) 
+                ? java.time.YearMonth.of(year, month)
+                : java.time.YearMonth.now();
+            
+            byte[] template = attendanceExcelService.generateTemplate(tenantId, ym);
+            
+            String filename = String.format("attendance_template_%d_%02d.xlsx", ym.getYear(), ym.getMonthValue());
+            
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=" + filename)
+                    .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                    .body(template);
+        } catch (Exception e) {
+            log.error("Error generating attendance template", e);
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    /**
+     * Convert tenant ID (String) to org ID (Long) for multi-tenancy.
+     * Uses hashCode to generate a consistent unique ID per tenant.
+     */
+    private Long getOrgIdFromTenant(String tenantId) {
+        if (tenantId == null || tenantId.isEmpty()) {
+            return 1L; // Default for backwards compatibility
+        }
+        // Use absolute value of hashCode to ensure positive number
+        // Add a base offset to avoid collision with legacy org IDs
+        return (long) Math.abs(tenantId.hashCode()) + 10000L;
     }
 }
