@@ -87,8 +87,31 @@ public class AssignmentService {
     }
 
     public List<EmployeeShiftAssignment> listByShiftCode(String shiftCode) {
+        String tenantId = TenantContext.getTenantId();
         List<EmployeeShiftAssignment> result = repo.findByShift_Code(shiftCode);
+        
+        // Filter by tenant - only return assignments for current tenant's employees
+        if (tenantId != null && !tenantId.isEmpty()) {
+            return result.stream()
+                .filter(a -> a.getEmployee() != null && tenantId.equals(a.getEmployee().getTenantId()))
+                .collect(Collectors.toList());
+        }
         return result;
-
+    }
+    
+    /**
+     * List assignments by employee code for current tenant
+     */
+    public List<EmployeeShiftAssignment> listByEmpCodeForTenant(String empCode) {
+        String tenantId = TenantContext.getTenantId();
+        List<EmployeeShiftAssignment> result = repo.findByEmployee_EmpCode(empCode);
+        
+        // Filter by tenant
+        if (tenantId != null && !tenantId.isEmpty()) {
+            return result.stream()
+                .filter(a -> a.getEmployee() != null && tenantId.equals(a.getEmployee().getTenantId()))
+                .collect(Collectors.toList());
+        }
+        return result;
     }
 }
