@@ -355,9 +355,19 @@ public class PayrollService {
             payroll.setPfCompany(pfCompany);
         }
 
-        // Loan deduction from loan module
-        BigDecimal loanEmi = loanService.getMonthlyEmiDeduction(payroll.getOrgId(), payroll.getEmpId());
+        // Loan deduction from loan module (tenant-aware)
+        String tenantId = payroll.getTenantId() != null ? payroll.getTenantId() : payroll.getOrgId();
+        BigDecimal loanEmi = loanService.getMonthlyEmiDeduction(tenantId, payroll.getEmpId());
         payroll.setLoanDeduction(loanEmi); // Keep for detailed reporting
+
+        // Auto-populate Due from overdue loan EMIs
+        Map<String, Object> overdueInfo = getOutstandingLoanDues(tenantId, payroll.getEmpId());
+        BigDecimal overdueLoanAmount = (BigDecimal) overdueInfo.get("totalOverdue");
+        if (overdueLoanAmount != null && overdueLoanAmount.compareTo(BigDecimal.ZERO) > 0) {
+            // Add overdue EMIs to Due column
+            BigDecimal existingDue = safeAdd(payroll.getDue());
+            payroll.setDue(existingDue.add(overdueLoanAmount));
+        }
 
         // Professional Tax (if applicable)
         if (Boolean.TRUE.equals(emp.getPtApplicable()) && grossSalary.compareTo(new BigDecimal("10000")) > 0) {
@@ -1095,6 +1105,7 @@ public class PayrollService {
     /**
      * Update due amount for an employee
      * Due represents previous outstanding amounts that need to be deducted
+     * If due is null or 0, auto-populate from overdue loan EMIs
      */
     public Payroll updateDue(Long payrollId, BigDecimal due, String remarks) {
         Payroll payroll = payrollRepo.findById(payrollId)
@@ -1102,6 +1113,17 @@ public class PayrollService {
 
         if (payroll.getStatus() != PayrollStatus.DRAFT) {
             throw new IllegalStateException("Cannot update payroll with status: " + payroll.getStatus());
+        }
+
+        // If due is not provided, check for overdue loan EMIs
+        if (due == null || due.compareTo(BigDecimal.ZERO) == 0) {
+            String tenantId = payroll.getTenantId() != null ? payroll.getTenantId() : payroll.getOrgId();
+            Map<String, Object> overdueInfo = getOutstandingLoanDues(tenantId, payroll.getEmpId());
+            BigDecimal overdueLoanAmount = (BigDecimal) overdueInfo.get("totalOverdue");
+            if (overdueLoanAmount != null && overdueLoanAmount.compareTo(BigDecimal.ZERO) > 0) {
+                due = overdueLoanAmount;
+                remarks = "Auto-populated from " + overdueInfo.get("overdueCount") + " overdue loan EMI(s)";
+            }
         }
 
         payroll.setDue(due);
@@ -1155,6 +1177,52 @@ public class PayrollService {
         
         // If previous payroll is still DRAFT, return 0 (not processed yet)
         return BigDecimal.ZERO;
+    }
+
+    /**
+     * Get loan info for payroll edit modal
+     * Returns loan EMI, overdue dues, and active loans for an employee
+     */
+    public Map<String, Object> getLoanInfoForPayroll(String tenantId, String empId, int year, int month) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        
+        // Get current month's loan EMI
+        BigDecimal loanEmi = loanService.getMonthlyEmiDeduction(tenantId, empId);
+        result.put("loanEmi", loanEmi);
+        
+        // Get active loans
+        List<com.example.hrms.loan.domain.Loan> activeLoans = loanService.getActiveLoans(tenantId, empId);
+        result.put("activeLoansCount", activeLoans.size());
+        
+        // Get outstanding dues (overdue EMIs)
+        Map<String, Object> overdueInfo = getOutstandingLoanDues(tenantId, empId);
+        result.put("overdueDues", overdueInfo.get("totalOverdue"));
+        result.put("overdueCount", overdueInfo.get("overdueCount"));
+        result.put("overdueEmis", overdueInfo.get("overdueEmis"));
+        
+        // Loan breakdown
+        List<Map<String, Object>> loanDetails = new ArrayList<>();
+        for (com.example.hrms.loan.domain.Loan loan : activeLoans) {
+            Map<String, Object> loanInfo = new LinkedHashMap<>();
+            loanInfo.put("loanId", loan.getId());
+            loanInfo.put("loanType", loan.getLoanType() != null ? loan.getLoanType().name() : "UNKNOWN");
+            loanInfo.put("isOneTimeDeduction", Boolean.TRUE.equals(loan.getIsOneTimeDeduction()));
+            loanInfo.put("emiAmount", loan.getEmiAmount());
+            loanInfo.put("outstandingBalance", loan.getOutstandingBalance());
+            loanInfo.put("emisRemaining", (loan.getTenureMonths() != null ? loan.getTenureMonths() : 0) - 
+                    (loan.getEmisPaid() != null ? loan.getEmisPaid() : 0));
+            loanInfo.put("sanctionDate", loan.getSanctionDate() != null ? loan.getSanctionDate().toString() : null);
+            loanInfo.put("remarks", loan.getRemarks());
+            loanDetails.add(loanInfo);
+        }
+        result.put("loans", loanDetails);
+        
+        result.put("empId", empId);
+        result.put("tenantId", tenantId);
+        result.put("year", year);
+        result.put("month", month);
+        
+        return result;
     }
 
     /**

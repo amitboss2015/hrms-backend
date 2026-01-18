@@ -231,6 +231,19 @@ public class PayrollController {
         return ResponseEntity.ok(payrollService.getOutstandingLoanDues(tenantId, empId));
     }
 
+    /**
+     * Get loan and due info for an employee (for Edit Payroll modal)
+     * Returns current loan EMI, overdue dues, and active loans
+     */
+    @GetMapping("/loan-info/{empId}")
+    public ResponseEntity<Map<String, Object>> getLoanInfoForPayroll(
+            @PathVariable String empId,
+            @RequestParam Integer year,
+            @RequestParam Integer month) {
+        String tenantId = com.example.hrms.tenant.TenantContext.getTenantId();
+        return ResponseEntity.ok(payrollService.getLoanInfoForPayroll(tenantId, empId, year, month));
+    }
+
     // ============ APPROVAL ============
 
     /**

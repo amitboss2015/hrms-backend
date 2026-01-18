@@ -136,23 +136,40 @@ public class ReportService {
 
     /**
      * Monthly salary sheet (matching the Excel format shared)
+     * Tenant-aware with loan breakdown
      */
     public Map<String, Object> getMonthlySalarySheet(String orgId, int year, int month) {
-        List<Payroll> payrolls = payrollRepo.findByOrgIdAndYearAndMonthOrderByEmpIdAsc(orgId, year, month);
-        List<Employee> employees = employeeRepo.findAll();
+        // Use tenant context for proper isolation
+        String tenantId = TenantContext.getTenantId();
+        if (tenantId == null || tenantId.isEmpty()) {
+            tenantId = orgId;
+        }
+        
+        List<Payroll> payrolls = payrollRepo.findByTenantIdAndYearAndMonthOrderByEmpIdAsc(tenantId, year, month);
+        List<Employee> employees = employeeRepo.findByTenantId(tenantId);
 
         Map<String, Employee> empMap = employees.stream()
                 .collect(Collectors.toMap(Employee::getEmpCode, e -> e, (a, b) -> a));
+        
+        // Get all active loans for this tenant for breakdown
+        List<Loan> allLoans = loanRepo.findByTenantIdOrderBySanctionDateDesc(tenantId);
+        Map<String, List<Loan>> loansByEmp = allLoans.stream()
+                .filter(l -> l.getStatus() == com.example.hrms.loan.domain.enums.LoanStatus.ACTIVE)
+                .collect(Collectors.groupingBy(Loan::getEmpId));
 
         List<Map<String, Object>> rows = new ArrayList<>();
         BigDecimal totalGross = BigDecimal.ZERO;
         BigDecimal totalNet = BigDecimal.ZERO;
         BigDecimal totalPf = BigDecimal.ZERO;
         BigDecimal totalEsi = BigDecimal.ZERO;
+        BigDecimal totalLoanEmi = BigDecimal.ZERO;
+        BigDecimal totalAdvance = BigDecimal.ZERO;
+        BigDecimal totalDue = BigDecimal.ZERO;
 
         int srNo = 1;
         for (Payroll p : payrolls) {
             Employee emp = empMap.get(p.getEmpId());
+            List<Loan> empLoans = loansByEmp.getOrDefault(p.getEmpId(), Collections.emptyList());
 
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("srNo", srNo++);
@@ -163,6 +180,7 @@ public class ReportService {
             row.put("finalPayment", p.getFinalPayment());
             row.put("workingDays", p.getTotalWorkingDays());
             row.put("presentDays", p.getPresentDays());
+            row.put("absentDays", p.getAbsentDays());
             row.put("workingDayAmount", p.getWorkingDayAmount());
             row.put("overtimeDays", p.getOvertimeDays());
             row.put("overtimeHours", p.getOvertimeHours());
@@ -174,8 +192,22 @@ public class ReportService {
             row.put("esiEmployee", p.getEsiEmployee());
             row.put("pfEmployee", p.getPfEmployee());
             row.put("pfCompany", p.getPfCompany());
-            row.put("advance", p.getAdvance());
+            
+            // Loan EMI breakdown
+            row.put("loanEmi", p.getLoanDeduction());
+            row.put("activeLoansCount", empLoans.size());
+            
+            // Breakdown: Loan EMI vs Manual Advance
+            BigDecimal loanEmi = safeAdd(p.getLoanDeduction());
+            BigDecimal totalAdv = safeAdd(p.getAdvance());
+            BigDecimal manualAdvance = totalAdv.subtract(loanEmi);
+            if (manualAdvance.compareTo(BigDecimal.ZERO) < 0) manualAdvance = BigDecimal.ZERO;
+            
+            row.put("manualAdvance", manualAdvance);
+            row.put("advance", p.getAdvance()); // Total ADV = Loan EMI + Manual Advance
             row.put("due", p.getDue());
+            row.put("otherDeduction", p.getOtherDeduction());
+            row.put("totalDeductions", p.getTotalDeductions());
             row.put("netSalary", p.getNetSalary());
             row.put("status", p.getStatus().name());
             row.put("paymentMode", p.getPaymentMode() != null ? p.getPaymentMode().name() : null);
@@ -188,29 +220,39 @@ public class ReportService {
             totalNet = totalNet.add(safeAdd(p.getNetSalary()));
             totalPf = totalPf.add(safeAdd(p.getPfEmployee()));
             totalEsi = totalEsi.add(safeAdd(p.getEsiEmployee()));
+            totalLoanEmi = totalLoanEmi.add(safeAdd(p.getLoanDeduction()));
+            totalAdvance = totalAdvance.add(safeAdd(p.getAdvance()));
+            totalDue = totalDue.add(safeAdd(p.getDue()));
         }
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("year", year);
         result.put("month", month);
+        result.put("tenantId", tenantId);
         result.put("employeeCount", payrolls.size());
         result.put("data", rows);
         result.put("totals", Map.of(
                 "totalGross", totalGross,
                 "totalNet", totalNet,
                 "totalPf", totalPf,
-                "totalEsi", totalEsi
+                "totalEsi", totalEsi,
+                "totalLoanEmi", totalLoanEmi,
+                "totalAdvance", totalAdvance,
+                "totalDue", totalDue
         ));
 
         return result;
     }
 
     /**
-     * EPF contribution report
+     * EPF contribution report (tenant-aware)
      */
     public List<Map<String, Object>> getEpfReport(String orgId, int year, int month) {
-        List<Payroll> payrolls = payrollRepo.findByOrgIdAndYearAndMonthOrderByEmpIdAsc(orgId, year, month);
-        List<Employee> employees = employeeRepo.findAll();
+        String tenantId = TenantContext.getTenantId();
+        if (tenantId == null || tenantId.isEmpty()) tenantId = orgId;
+        
+        List<Payroll> payrolls = payrollRepo.findByTenantIdAndYearAndMonthOrderByEmpIdAsc(tenantId, year, month);
+        List<Employee> employees = employeeRepo.findByTenantId(tenantId);
 
         Map<String, Employee> empMap = employees.stream()
                 .collect(Collectors.toMap(Employee::getEmpCode, e -> e, (a, b) -> a));
@@ -238,11 +280,14 @@ public class ReportService {
     }
 
     /**
-     * ESIC contribution report
+     * ESIC contribution report (tenant-aware)
      */
     public List<Map<String, Object>> getEsicReport(String orgId, int year, int month) {
-        List<Payroll> payrolls = payrollRepo.findByOrgIdAndYearAndMonthOrderByEmpIdAsc(orgId, year, month);
-        List<Employee> employees = employeeRepo.findAll();
+        String tenantId = TenantContext.getTenantId();
+        if (tenantId == null || tenantId.isEmpty()) tenantId = orgId;
+        
+        List<Payroll> payrolls = payrollRepo.findByTenantIdAndYearAndMonthOrderByEmpIdAsc(tenantId, year, month);
+        List<Employee> employees = employeeRepo.findByTenantId(tenantId);
 
         Map<String, Employee> empMap = employees.stream()
                 .collect(Collectors.toMap(Employee::getEmpCode, e -> e, (a, b) -> a));
@@ -274,11 +319,14 @@ public class ReportService {
     // =========== LOAN REPORTS ===========
 
     /**
-     * Active loans report
+     * Active loans report (tenant-aware)
      */
     public List<Map<String, Object>> getActiveLoansReport(String orgId) {
-        List<Loan> loans = loanRepo.findByOrgIdOrderBySanctionDateDesc(orgId);
-        List<Employee> employees = employeeRepo.findAll();
+        String tenantId = TenantContext.getTenantId();
+        if (tenantId == null || tenantId.isEmpty()) tenantId = orgId;
+        
+        List<Loan> loans = loanRepo.findByTenantIdOrderBySanctionDateDesc(tenantId);
+        List<Employee> employees = employeeRepo.findByTenantId(tenantId);
 
         Map<String, Employee> empMap = employees.stream()
                 .collect(Collectors.toMap(Employee::getEmpCode, e -> e, (a, b) -> a));
@@ -292,16 +340,20 @@ public class ReportService {
             row.put("loanId", loan.getId());
             row.put("empCode", loan.getEmpId());
             row.put("name", emp != null ? safeName(emp) : loan.getEmpId());
-            row.put("loanType", loan.getLoanType().name());
+            row.put("loanType", loan.getLoanType() != null ? loan.getLoanType().name() : "UNKNOWN");
+            row.put("isOneTimeDeduction", Boolean.TRUE.equals(loan.getIsOneTimeDeduction()));
             row.put("principal", loan.getPrincipalAmount());
             row.put("emiAmount", loan.getEmiAmount());
             row.put("tenure", loan.getTenureMonths());
             row.put("emisPaid", loan.getEmisPaid());
-            row.put("emisRemaining", loan.getTenureMonths() - loan.getEmisPaid());
+            row.put("emisRemaining", (loan.getTenureMonths() != null ? loan.getTenureMonths() : 0) - 
+                    (loan.getEmisPaid() != null ? loan.getEmisPaid() : 0));
             row.put("totalPaid", loan.getTotalPaid());
             row.put("outstanding", loan.getOutstandingBalance());
             row.put("status", loan.getStatus().name());
-            row.put("sanctionDate", loan.getSanctionDate().toString());
+            row.put("sanctionDate", loan.getSanctionDate() != null ? loan.getSanctionDate().toString() : null);
+            row.put("firstEmiDate", loan.getFirstEmiDate() != null ? loan.getFirstEmiDate().toString() : null);
+            row.put("remarks", loan.getRemarks());
 
             report.add(row);
         }
@@ -310,11 +362,14 @@ public class ReportService {
     }
 
     /**
-     * Loan deduction report for a month
+     * Loan deduction report for a month (tenant-aware)
      */
     public List<Map<String, Object>> getLoanDeductionReport(String orgId, int year, int month) {
-        List<Payroll> payrolls = payrollRepo.findByOrgIdAndYearAndMonthOrderByEmpIdAsc(orgId, year, month);
-        List<Employee> employees = employeeRepo.findAll();
+        String tenantId = TenantContext.getTenantId();
+        if (tenantId == null || tenantId.isEmpty()) tenantId = orgId;
+        
+        List<Payroll> payrolls = payrollRepo.findByTenantIdAndYearAndMonthOrderByEmpIdAsc(tenantId, year, month);
+        List<Employee> employees = employeeRepo.findByTenantId(tenantId);
 
         Map<String, Employee> empMap = employees.stream()
                 .collect(Collectors.toMap(Employee::getEmpCode, e -> e, (a, b) -> a));
@@ -343,9 +398,16 @@ public class ReportService {
 
     /**
      * Generate payslip data for an employee
+     * Tenant-aware with detailed loan breakdown
      */
     public Map<String, Object> getPayslip(String orgId, String empId, int year, int month) {
-        Payroll payroll = payrollRepo.findByOrgIdAndEmpIdAndYearAndMonth(orgId, empId, year, month)
+        // Use tenant context for proper isolation
+        String tenantId = TenantContext.getTenantId();
+        if (tenantId == null || tenantId.isEmpty()) {
+            tenantId = orgId;
+        }
+        
+        Payroll payroll = payrollRepo.findByTenantIdAndEmpIdAndYearAndMonth(tenantId, empId, year, month)
                 .orElse(null);
         if (payroll == null) return null;
 
@@ -362,6 +424,7 @@ public class ReportService {
         payslip.put("bankAccount", emp.getBankAccount());
         payslip.put("uanNumber", emp.getUanNumber());
         payslip.put("esicNumber", emp.getEsicNumber());
+        payslip.put("tenantId", tenantId);
 
         // Payroll Period
         payslip.put("year", year);
@@ -397,18 +460,49 @@ public class ReportService {
         payslip.put("earnings", earnings);
         payslip.put("grossSalary", payroll.getGrossSalary());
 
-        // Deductions
+        // Get active loans for this employee for breakdown
+        List<Loan> activeLoans = loanRepo.findByTenantIdAndEmpIdAndStatus(
+                tenantId, empId, com.example.hrms.loan.domain.enums.LoanStatus.ACTIVE);
+        
+        // Loan breakdown
+        BigDecimal loanEmi = safeAdd(payroll.getLoanDeduction());
+        BigDecimal totalAdv = safeAdd(payroll.getAdvance());
+        BigDecimal manualAdvance = totalAdv.subtract(loanEmi);
+        if (manualAdvance.compareTo(BigDecimal.ZERO) < 0) manualAdvance = BigDecimal.ZERO;
+        
+        List<Map<String, Object>> loanDetails = activeLoans.stream().map(loan -> {
+            Map<String, Object> loanInfo = new LinkedHashMap<>();
+            loanInfo.put("loanId", loan.getId());
+            loanInfo.put("loanType", loan.getLoanType() != null ? loan.getLoanType().name() : "UNKNOWN");
+            loanInfo.put("isOneTimeDeduction", Boolean.TRUE.equals(loan.getIsOneTimeDeduction()));
+            loanInfo.put("emiAmount", loan.getEmiAmount());
+            loanInfo.put("outstandingBalance", loan.getOutstandingBalance());
+            loanInfo.put("emisRemaining", (loan.getTenureMonths() != null ? loan.getTenureMonths() : 0) - 
+                    (loan.getEmisPaid() != null ? loan.getEmisPaid() : 0));
+            return loanInfo;
+        }).toList();
+
+        // Deductions with breakdown
         Map<String, BigDecimal> deductions = new LinkedHashMap<>();
         deductions.put("ESI (0.75%)", payroll.getEsiEmployee());
         deductions.put("PF Own (6%)", payroll.getPfEmployee());
-        deductions.put("Advance", payroll.getAdvance());
-        deductions.put("Due", payroll.getDue());
-        deductions.put("Loan EMI", payroll.getLoanDeduction());
+        deductions.put("Loan EMI", loanEmi);
+        deductions.put("Manual Advance", manualAdvance);
+        deductions.put("Total Advance (ADV)", payroll.getAdvance());
+        deductions.put("Due (Previous Outstanding)", payroll.getDue());
         deductions.put("Professional Tax", payroll.getProfessionalTax());
         deductions.put("TDS", payroll.getTds());
         deductions.put("Other Deduction", payroll.getOtherDeduction());
         payslip.put("deductions", deductions);
         payslip.put("totalDeductions", payroll.getTotalDeductions());
+        
+        // Loan info section
+        payslip.put("loanInfo", Map.of(
+                "activeLoansCount", activeLoans.size(),
+                "totalLoanEmi", loanEmi,
+                "manualAdvance", manualAdvance,
+                "loans", loanDetails
+        ));
 
         // Net Pay
         payslip.put("netSalary", payroll.getNetSalary());
