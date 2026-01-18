@@ -93,6 +93,12 @@ public class AttendanceQueryServiceImpl implements AttendanceQueryService {
             punchMap.computeIfAbsent(workDate, k -> new ArrayList<>()).add(p);
         }
 
+        // If no punch records and no day records exist for this period, return empty list
+        // This prevents showing all days as "ABSENT" when no data has been imported
+        if (punches.isEmpty() && days.isEmpty()) {
+            return List.of();
+        }
+
         // Build DTOs for each day
         List<DailyPunchLogDTO> result = new ArrayList<>();
         
