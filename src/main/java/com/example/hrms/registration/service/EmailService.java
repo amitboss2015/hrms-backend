@@ -10,17 +10,19 @@ import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
+import java.io.UnsupportedEncodingException;
+
 /**
- * Email service for sending activation emails via Gmail SMTP.
+ * Email service for sending activation and welcome emails.
  * 
  * Configuration required in application.properties:
- * - spring.mail.host=smtp.gmail.com
+ * - spring.mail.host=smtp.zoho.in (for Zoho Mail)
  * - spring.mail.port=587
- * - spring.mail.username=your-email@gmail.com
- * - spring.mail.password=your-app-password (NOT regular password)
+ * - spring.mail.username=noreply@chandrahr.in
+ * - spring.mail.password=your-zoho-app-password
  * 
- * Note: You need to enable 2FA on Gmail and create an "App Password"
- * Go to: Google Account → Security → 2-Step Verification → App Passwords
+ * For Zoho Mail:
+ * Go to: accounts.zoho.com → Security → App Passwords → Generate
  */
 @Service
 @RequiredArgsConstructor
@@ -34,6 +36,9 @@ public class EmailService {
 
     @Value("${spring.mail.username:noreply@chandrahr.in}")
     private String fromEmail;
+    
+    @Value("${app.mail.from-name:ChandraHR}")
+    private String fromName;
 
     @Value("${app.name:ChandraHR}")
     private String appName;
@@ -47,7 +52,8 @@ public class EmailService {
             MimeMessage message = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
 
-            helper.setFrom(fromEmail);
+            // Set from with display name: "ChandraHR <noreply@chandrahr.in>"
+            helper.setFrom(fromEmail, fromName);
             helper.setTo(toEmail);
             helper.setSubject("Welcome to " + appName + " - Activate Your Account");
 
@@ -59,7 +65,7 @@ public class EmailService {
             mailSender.send(message);
             log.info("✅ Activation email sent to: {}", toEmail);
 
-        } catch (MessagingException e) {
+        } catch (MessagingException | UnsupportedEncodingException e) {
             log.error("❌ Failed to send activation email to {}: {}", toEmail, e.getMessage());
             throw new RuntimeException("Failed to send activation email", e);
         }
@@ -74,7 +80,8 @@ public class EmailService {
             MimeMessage message = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
 
-            helper.setFrom(fromEmail);
+            // Set from with display name: "ChandraHR <noreply@chandrahr.in>"
+            helper.setFrom(fromEmail, fromName);
             helper.setTo(toEmail);
             helper.setSubject("🎉 Welcome to " + appName + " - Your Account is Ready!");
 
@@ -86,7 +93,7 @@ public class EmailService {
             mailSender.send(message);
             log.info("✅ Welcome email sent to: {}", toEmail);
 
-        } catch (MessagingException e) {
+        } catch (MessagingException | UnsupportedEncodingException e) {
             log.error("❌ Failed to send welcome email to {}: {}", toEmail, e.getMessage());
         }
     }
