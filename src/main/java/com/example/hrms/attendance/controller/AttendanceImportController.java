@@ -208,8 +208,8 @@ public class AttendanceImportController {
     }
 
     /**
-     * Recalculate attendance for a specific month/year.
-     * This rebuilds all attendance sessions and day rollups from raw punches.
+     * Sync attendance with leave records for a specific month/year.
+     * This is a lightweight operation that updates ABSENT days to LEAVE if leave records exist.
      */
     @PostMapping("/import/recalculate")
     @Transactional
@@ -218,29 +218,38 @@ public class AttendanceImportController {
             @RequestParam("year") int year) {
 
         String tenantId = TenantContext.getTenantId();
-        Long orgId = getOrgIdFromTenant(tenantId);
         YearMonth ym = YearMonth.of(year, month);
+        java.time.LocalDate from = ym.atDay(1);
+        java.time.LocalDate to = ym.atEndOfMonth();
 
-        // Delete existing computed data
-        sessionRepo.deleteByOrgIdAndWorkDateBetween(orgId, ym.atDay(1), ym.atEndOfMonth());
-        dayRepo.deleteByOrgIdAndWorkDateBetween(orgId, ym.atDay(1), ym.atEndOfMonth());
+        log.info("Syncing attendance with leaves for tenant={}, month={}/{}", tenantId, month, year);
 
-        // Find all employees with punches in this month
-        java.time.Instant fromUtc = ym.atDay(1).atStartOfDay(java.time.ZoneId.of("Asia/Kolkata")).toInstant();
-        java.time.Instant toUtc = ym.atEndOfMonth().plusDays(1).atStartOfDay(java.time.ZoneId.of("Asia/Kolkata")).toInstant();
-        List<Long> empIds = punchRepo.findDistinctEmployeeIdsForRange(orgId, fromUtc, toUtc);
-
-        // Rebuild for each employee
-        int rebuilt = 0;
-        for (Long empId : empIds) {
-            engine.rebuildEmployeeMonth(orgId, empId, ym);
-            rebuilt++;
+        // Get all attendance days marked as ABSENT for this period
+        List<com.example.hrms.attendance.domain.AttendanceDay> absentDays = 
+            dayRepo.findByTenantIdAndWorkDateBetweenAndStatus(tenantId, from, to, "ABSENT");
+        
+        int updated = 0;
+        for (var day : absentDays) {
+            // Get employee code for leave lookup
+            var employee = importService.getEmployeeById(day.getEmployeeId());
+            if (employee == null) continue;
+            
+            String empCode = employee.getEmpCode();
+            if (empCode == null) continue;
+            
+            // Check if there's an approved leave for this date
+            boolean hasLeave = importService.hasApprovedLeave(tenantId, empCode, day.getWorkDate());
+            if (hasLeave) {
+                day.setStatus("LEAVE");
+                dayRepo.save(day);
+                updated++;
+            }
         }
 
         Map<String, Object> result = new HashMap<>();
         result.put("success", true);
-        result.put("message", "Recalculated attendance for " + rebuilt + " employees for " + ym);
-        result.put("employeesProcessed", rebuilt);
+        result.put("message", "Updated " + updated + " days from ABSENT to LEAVE for " + ym);
+        result.put("daysUpdated", updated);
         return ResponseEntity.ok(result);
     }
 

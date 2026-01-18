@@ -86,4 +86,10 @@ public interface AttendanceDayRepository extends JpaRepository<AttendanceDay, Lo
      */
     java.util.Optional<AttendanceDay> findFirstByTenantIdAndEmployeeIdAndWorkDate(
         String tenantId, Long empId, LocalDate workDate);
+    
+    /**
+     * Find attendance days by tenant, date range and status
+     */
+    List<AttendanceDay> findByTenantIdAndWorkDateBetweenAndStatus(
+        String tenantId, LocalDate from, LocalDate to, String status);
 }

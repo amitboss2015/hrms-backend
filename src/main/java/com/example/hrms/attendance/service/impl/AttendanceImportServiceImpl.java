@@ -7,6 +7,9 @@ import com.example.hrms.attendance.repo.*;
 import com.example.hrms.attendance.service.AttendanceImportService;
 import com.example.hrms.attendance.service.AttendanceEngine;
 import com.example.hrms.domain.Employee;
+import com.example.hrms.leave.repo.EmployeeLeaveRepository;
+import com.example.hrms.leave.domain.EmployeeLeave;
+import com.example.hrms.leave.domain.enums.LeaveStatus;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.poi.ss.usermodel.*;
@@ -28,6 +31,7 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
     private final ImportErrorRepository errorRepo;
     private final com.example.hrms.repo.EmployeeRepository employeeRepo;
     private final AttendanceEngine attendanceEngine;
+    private final EmployeeLeaveRepository leaveRepo;
 
     private static final ZoneId DEFAULT_TZ = ZoneId.of("Asia/Kolkata");
     
@@ -687,5 +691,23 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
     private String escapeJson(String s) {
         if (s == null) return "";
         return s.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+    
+    /**
+     * Get employee by ID
+     */
+    @Override
+    public Employee getEmployeeById(Long employeeId) {
+        return employeeRepo.findById(employeeId).orElse(null);
+    }
+    
+    /**
+     * Check if employee has approved leave for a date
+     */
+    @Override
+    public boolean hasApprovedLeave(String tenantId, String empCode, LocalDate date) {
+        List<EmployeeLeave> leaves = leaveRepo.findByTenantIdAndEmpIdAndStartDateLessThanEqualAndEndDateGreaterThanEqual(
+            tenantId, empCode, date, date);
+        return leaves.stream().anyMatch(l -> l.getStatus() == LeaveStatus.APPROVED);
     }
 }

@@ -2,7 +2,10 @@ package com.example.hrms.attendance.service;
 
 import com.example.hrms.attendance.dto.AttendanceImportPreview;
 import com.example.hrms.attendance.dto.ImportResultDTO;
+import com.example.hrms.domain.Employee;
 import org.springframework.web.multipart.MultipartFile;
+
+import java.time.LocalDate;
 
 public interface AttendanceImportService {
     
@@ -27,4 +30,14 @@ public interface AttendanceImportService {
      * Import attendance from biometric Excel file (tenant-aware version).
      */
     ImportResultDTO importLogsExcel(Long orgId, String tenantId, MultipartFile file, int month, int year, String uploadedBy);
+    
+    /**
+     * Get employee by ID
+     */
+    Employee getEmployeeById(Long employeeId);
+    
+    /**
+     * Check if employee has approved leave for a date
+     */
+    boolean hasApprovedLeave(String tenantId, String empCode, LocalDate date);
 }
