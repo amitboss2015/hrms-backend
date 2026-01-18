@@ -21,4 +21,10 @@ public interface LoanRepaymentRepository extends JpaRepository<LoanRepayment, Lo
     
     // Find overdue EMIs
     List<LoanRepayment> findByIsPaidFalseAndDueDateBeforeOrderByDueDateAsc(LocalDate date);
+    
+    // Find repayments paid within a date range
+    List<LoanRepayment> findByPaidDateBetween(LocalDate startDate, LocalDate endDate);
+    
+    // Find repayments due within a date range
+    List<LoanRepayment> findByDueDateBetween(LocalDate startDate, LocalDate endDate);
 }

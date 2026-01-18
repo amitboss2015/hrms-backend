@@ -26,6 +26,9 @@ public interface PayrollRepository extends JpaRepository<Payroll, Long> {
     List<Payroll> findByTenantIdAndEmpIdOrderByYearDescMonthDesc(String tenantId, String empId);
     
     List<Payroll> findByTenantIdAndYearOrderByMonthDescEmpIdAsc(String tenantId, Integer year);
+    
+    // Find payrolls for a specific month (used in loan reports)
+    List<Payroll> findByTenantIdAndYearAndMonth(String tenantId, Integer year, Integer month);
 
     // Summary queries
     @Query("SELECT SUM(p.grossSalary) FROM Payroll p WHERE p.tenantId = :tenantId AND p.year = :year AND p.month = :month")
