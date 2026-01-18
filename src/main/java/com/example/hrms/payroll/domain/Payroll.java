@@ -180,11 +180,11 @@ public class Payroll {
 
     /**
      * Calculate all totals based on the payment sheet formula:
-     * GROSS SALARY = WORKING DAY AMOUNT + OT DAY AMOUNT + OT HR AMOUNT + HOUSE RENT + MEDICAL EXP
-     * NET SALARY = GROSS SALARY - ESI - PF OWN - ADV - DUE
+     * GROSS SALARY = WORKING DAY AMOUNT + OT DAY AMOUNT + OT HR AMOUNT + HOUSE RENT + MEDICAL EXP + BONUS + INCENTIVE
+     * NET SALARY = GROSS SALARY - ESI - PF OWN - ADV - DUE - OTHER DEDUCTIONS
      * 
-     * Note: ADV column already includes loanDeduction, so we don't add loanDeduction separately
-     * to avoid double counting. loanDeduction is kept for detailed reporting purposes.
+     * ADV column should include loanDeduction + manual advance.
+     * If advance < loanDeduction (legacy data), we use the greater value to ensure loan is deducted.
      */
     public void calculateTotals() {
         // Calculate gross salary
@@ -199,13 +199,22 @@ public class Payroll {
                 .add(safeAdd(bonus))
                 .add(safeAdd(incentive));
 
+        // Ensure advance includes at least the loan EMI
+        // This handles legacy data where advance might be 0 but loanDeduction has a value
+        BigDecimal effectiveAdvance = safeAdd(advance);
+        BigDecimal loanEmi = safeAdd(loanDeduction);
+        if (effectiveAdvance.compareTo(loanEmi) < 0) {
+            // Advance doesn't include loan EMI, use loan EMI as minimum
+            effectiveAdvance = loanEmi;
+            this.advance = loanEmi; // Fix the advance value
+        }
+
         // Calculate total deductions
         // ADV column includes: loan EMI + any manual advances
         // DUE column: previous month's outstanding dues
-        // loanDeduction is NOT added separately since it's already included in ADV
         this.totalDeductions = safeAdd(esiEmployee)
                 .add(safeAdd(pfEmployee))
-                .add(safeAdd(advance))       // ADV includes loan deductions
+                .add(effectiveAdvance)       // ADV includes loan deductions
                 .add(safeAdd(due))           // DUE for previous outstanding
                 .add(safeAdd(professionalTax))
                 .add(safeAdd(tds))

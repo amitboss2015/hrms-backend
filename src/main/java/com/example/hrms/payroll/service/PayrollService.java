@@ -517,6 +517,8 @@ public class PayrollService {
 
     /**
      * Update payroll (for manual adjustments)
+     * Note: Advance field should contain ONLY manual advances from the UI.
+     * Loan EMI is added automatically to ensure it's always deducted.
      */
     public Payroll updatePayroll(Long payrollId, Payroll updates) {
         Payroll payroll = payrollRepo.findById(payrollId)
@@ -528,7 +530,12 @@ public class PayrollService {
         }
 
         // Update allowed fields
-        if (updates.getAdvance() != null) payroll.setAdvance(updates.getAdvance());
+        // For advance: UI sends manual advance, we add loan EMI to it
+        if (updates.getAdvance() != null) {
+            BigDecimal manualAdvance = updates.getAdvance();
+            BigDecimal loanEmi = safeAdd(payroll.getLoanDeduction());
+            payroll.setAdvance(loanEmi.add(manualAdvance)); // ADV = Loan EMI + Manual Advance
+        }
         if (updates.getDue() != null) payroll.setDue(updates.getDue());
         if (updates.getBonus() != null) payroll.setBonus(updates.getBonus());
         if (updates.getIncentive() != null) payroll.setIncentive(updates.getIncentive());
