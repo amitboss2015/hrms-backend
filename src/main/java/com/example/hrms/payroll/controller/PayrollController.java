@@ -25,6 +25,16 @@ public class PayrollController {
         this.payrollService = payrollService;
     }
 
+    /**
+     * Helper to resolve orgId - uses TenantContext if orgId is null/empty/default
+     */
+    private String resolveOrgId(String orgId) {
+        if (orgId == null || orgId.isEmpty() || "ORG001".equals(orgId)) {
+            return TenantContext.getTenantId();
+        }
+        return orgId;
+    }
+
     // ============ PRE-CHECK ============
 
     /**
@@ -32,10 +42,10 @@ public class PayrollController {
      */
     @GetMapping("/check-attendance")
     public ResponseEntity<Map<String, Object>> checkAttendanceAvailability(
-            @RequestParam(defaultValue = "ORG001") String orgId,
+            @RequestParam(required = false) String orgId,
             @RequestParam Integer year,
             @RequestParam Integer month) {
-        return ResponseEntity.ok(payrollService.checkAttendanceAvailability(orgId, year, month));
+        return ResponseEntity.ok(payrollService.checkAttendanceAvailability(resolveOrgId(orgId), year, month));
     }
 
     // ============ GENERATION ============
@@ -72,18 +82,20 @@ public class PayrollController {
      */
     @PostMapping("/generate/{empId}")
     public ResponseEntity<?> generateEmployeePayroll(
-            @RequestParam(defaultValue = "ORG001") String orgId,
+            @RequestParam(required = false) String orgId,
             @PathVariable String empId,
             @RequestParam Integer year,
             @RequestParam Integer month) {
         
+        String resolvedOrgId = resolveOrgId(orgId);
+        
         // Check if attendance is available for this employee
-        Map<String, Object> attendanceCheck = payrollService.checkEmployeeAttendance(orgId, empId, year, month);
+        Map<String, Object> attendanceCheck = payrollService.checkEmployeeAttendance(resolvedOrgId, empId, year, month);
         if (!(Boolean) attendanceCheck.get("available")) {
             return ResponseEntity.badRequest().body(attendanceCheck);
         }
         
-        return ResponseEntity.ok(payrollService.generatePayroll(orgId, empId, year, month));
+        return ResponseEntity.ok(payrollService.generatePayroll(resolvedOrgId, empId, year, month));
     }
 
     // ============ RETRIEVAL ============
@@ -93,10 +105,10 @@ public class PayrollController {
      */
     @GetMapping
     public ResponseEntity<List<Payroll>> getMonthlyPayroll(
-            @RequestParam(defaultValue = "ORG001") String orgId,
+            @RequestParam(required = false) String orgId,
             @RequestParam Integer year,
             @RequestParam Integer month) {
-        return ResponseEntity.ok(payrollService.getMonthlyPayroll(orgId, year, month));
+        return ResponseEntity.ok(payrollService.getMonthlyPayroll(resolveOrgId(orgId), year, month));
     }
 
     /**
@@ -114,9 +126,9 @@ public class PayrollController {
      */
     @GetMapping("/employee/{empId}")
     public ResponseEntity<List<Payroll>> getEmployeePayrollHistory(
-            @RequestParam(defaultValue = "ORG001") String orgId,
+            @RequestParam(required = false) String orgId,
             @PathVariable String empId) {
-        return ResponseEntity.ok(payrollService.getEmployeePayrollHistory(orgId, empId));
+        return ResponseEntity.ok(payrollService.getEmployeePayrollHistory(resolveOrgId(orgId), empId));
     }
 
     /**
@@ -124,10 +136,10 @@ public class PayrollController {
      */
     @GetMapping("/summary")
     public ResponseEntity<Map<String, Object>> getPayrollSummary(
-            @RequestParam(defaultValue = "ORG001") String orgId,
+            @RequestParam(required = false) String orgId,
             @RequestParam Integer year,
             @RequestParam Integer month) {
-        return ResponseEntity.ok(payrollService.getPayrollSummary(orgId, year, month));
+        return ResponseEntity.ok(payrollService.getPayrollSummary(resolveOrgId(orgId), year, month));
     }
 
     /**
@@ -135,10 +147,10 @@ public class PayrollController {
      */
     @GetMapping("/skipped")
     public ResponseEntity<Map<String, Object>> getSkippedEmployees(
-            @RequestParam(defaultValue = "ORG001") String orgId,
+            @RequestParam(required = false) String orgId,
             @RequestParam Integer year,
             @RequestParam Integer month) {
-        return ResponseEntity.ok(payrollService.getSkippedEmployees(orgId, year, month));
+        return ResponseEntity.ok(payrollService.getSkippedEmployees(resolveOrgId(orgId), year, month));
     }
 
     /**
@@ -154,10 +166,10 @@ public class PayrollController {
      */
     @GetMapping("/detailed")
     public ResponseEntity<List<Map<String, Object>>> getDetailedMonthlyPayroll(
-            @RequestParam(defaultValue = "ORG001") String orgId,
+            @RequestParam(required = false) String orgId,
             @RequestParam Integer year,
             @RequestParam Integer month) {
-        return ResponseEntity.ok(payrollService.getDetailedMonthlyPayroll(orgId, year, month));
+        return ResponseEntity.ok(payrollService.getDetailedMonthlyPayroll(resolveOrgId(orgId), year, month));
     }
 
     /**
@@ -165,10 +177,10 @@ public class PayrollController {
      */
     @GetMapping("/paid")
     public ResponseEntity<List<Payroll>> getPaidPayroll(
-            @RequestParam(defaultValue = "ORG001") String orgId,
+            @RequestParam(required = false) String orgId,
             @RequestParam Integer year,
             @RequestParam Integer month) {
-        return ResponseEntity.ok(payrollService.getPaidPayroll(orgId, year, month));
+        return ResponseEntity.ok(payrollService.getPaidPayroll(resolveOrgId(orgId), year, month));
     }
 
     // ============ UPDATE ============
@@ -261,11 +273,11 @@ public class PayrollController {
      */
     @PostMapping("/approve-all")
     public ResponseEntity<List<Payroll>> approveMonthlyPayroll(
-            @RequestParam(defaultValue = "ORG001") String orgId,
+            @RequestParam(required = false) String orgId,
             @RequestParam Integer year,
             @RequestParam Integer month,
             @RequestParam(required = false) String approvedBy) {
-        return ResponseEntity.ok(payrollService.approveMonthlyPayroll(orgId, year, month, approvedBy));
+        return ResponseEntity.ok(payrollService.approveMonthlyPayroll(resolveOrgId(orgId), year, month, approvedBy));
     }
 
     // ============ PAYMENT ============
@@ -301,7 +313,7 @@ public class PayrollController {
      */
     @PostMapping("/pay-all")
     public ResponseEntity<List<Payroll>> processMonthlyPayment(
-            @RequestParam(defaultValue = "ORG001") String orgId,
+            @RequestParam(required = false) String orgId,
             @RequestParam Integer year,
             @RequestParam Integer month,
             @RequestBody PaymentRequest request) {
@@ -309,7 +321,7 @@ public class PayrollController {
                 PaymentMode.valueOf(request.paymentMode) : PaymentMode.BANK_TRANSFER;
         
         return ResponseEntity.ok(payrollService.processMonthlyPayment(
-                orgId, year, month, mode, request.paidBy));
+                resolveOrgId(orgId), year, month, mode, request.paidBy));
     }
 
     // ============ DELETE ============
@@ -332,11 +344,11 @@ public class PayrollController {
      */
     @DeleteMapping
     public ResponseEntity<Void> deleteMonthlyPayroll(
-            @RequestParam(defaultValue = "ORG001") String orgId,
+            @RequestParam(required = false) String orgId,
             @RequestParam Integer year,
             @RequestParam Integer month) {
         try {
-            payrollService.deleteMonthlyPayroll(orgId, year, month);
+            payrollService.deleteMonthlyPayroll(resolveOrgId(orgId), year, month);
             return ResponseEntity.ok().build();
         } catch (IllegalStateException e) {
             return ResponseEntity.badRequest().build();
