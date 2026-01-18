@@ -47,52 +47,13 @@ TRUNCATE TABLE tenant;
 SET FOREIGN_KEY_CHECKS = 1;
 
 -- =====================================================
--- CREATE SUPERADMIN USER AND TENANT
+-- NOTE: Superadmin will be auto-created by DataInitializer
+-- when the Spring Boot application starts (if no users exist)
 -- =====================================================
 
--- Create superadmin tenant
-INSERT INTO tenant (
-    id, name, subdomain, email, phone, is_active, 
-    plan, max_employees, currency, timezone, date_format,
-    subscription_start, subscription_end, created_at, deleted
-) VALUES (
-    'SUPERADMIN', 
-    'ChandraHR Admin', 
-    'admin', 
-    'admin@chandrahr.in', 
-    '+91-9999999999',
-    b'1',
-    'ENTERPRISE',
-    99999,
-    'INR',
-    'Asia/Kolkata',
-    'DD/MM/YYYY',
-    CURDATE(),
-    DATE_ADD(CURDATE(), INTERVAL 100 YEAR),
-    NOW(),
-    b'0'
-);
-
--- Create superadmin user
--- Password: Admin@123 (BCrypt hash)
-INSERT INTO users (
-    email, password_hash, first_name, last_name, 
-    role, tenant_id, is_active, created_at
-) VALUES (
-    'admin@chandrahr.in',
-    '$2a$10$N9qo8uLOickgx2ZMRZoMy.MqrxvE0t.W0Y.yVX3vCmqRlqvXjFSHu',
-    'Super',
-    'Admin',
-    'SUPER_ADMIN',
-    'SUPERADMIN',
-    b'1',
-    NOW()
-);
-
--- =====================================================
--- VERIFY
--- =====================================================
+-- Verify clean state
 SELECT 'Database reset complete!' AS status;
-SELECT 'Superadmin created:' AS info, 'admin@chandrahr.in' AS email, 'Admin@123' AS password;
-SELECT * FROM tenant;
-SELECT id, email, role, tenant_id, HEX(is_active) as is_active FROM users;
+SELECT 'Restart backend to auto-create superadmin' AS note;
+SELECT 'Superadmin credentials: admin@chandrahr.in / Admin@123' AS info;
+SELECT COUNT(*) as tenant_count FROM tenant;
+SELECT COUNT(*) as user_count FROM users;
