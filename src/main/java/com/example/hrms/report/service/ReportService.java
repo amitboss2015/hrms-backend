@@ -9,7 +9,6 @@ import com.example.hrms.loan.repo.LoanRepaymentRepository;
 import com.example.hrms.payroll.domain.Payroll;
 import com.example.hrms.payroll.repo.PayrollRepository;
 import com.example.hrms.repo.EmployeeRepository;
-import com.example.hrms.tenant.TenantContext;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -40,14 +39,6 @@ public class ReportService {
         this.repaymentRepo = repaymentRepo;
     }
     
-    // Helper to find employee using tenant-aware lookup
-    private Optional<Employee> findEmployee(String empCode) {
-        String tenantId = TenantContext.getTenantId();
-        return tenantId != null 
-            ? employeeRepo.findByTenantIdAndEmpCode(tenantId, empCode)
-            : employeeRepo.findByEmpCode(empCode);
-    }
-
     // =========== ATTENDANCE REPORTS ===========
 
     /**
@@ -136,14 +127,11 @@ public class ReportService {
 
     /**
      * Monthly salary sheet (matching the Excel format shared)
-     * Tenant-aware with loan breakdown
+     * Uses orgId passed from controller (already resolved)
      */
     public Map<String, Object> getMonthlySalarySheet(String orgId, int year, int month) {
-        // Use tenant context for proper isolation
-        String tenantId = TenantContext.getTenantId();
-        if (tenantId == null || tenantId.isEmpty()) {
-            tenantId = orgId;
-        }
+        // Use orgId passed from controller - already resolved by controller
+        String tenantId = orgId;
         
         List<Payroll> payrolls = payrollRepo.findByTenantIdAndYearAndMonthOrderByEmpIdAsc(tenantId, year, month);
         List<Employee> employees = employeeRepo.findByTenantId(tenantId);
@@ -245,11 +233,10 @@ public class ReportService {
     }
 
     /**
-     * EPF contribution report (tenant-aware)
+     * EPF contribution report
      */
     public List<Map<String, Object>> getEpfReport(String orgId, int year, int month) {
-        String tenantId = TenantContext.getTenantId();
-        if (tenantId == null || tenantId.isEmpty()) tenantId = orgId;
+        String tenantId = orgId;
         
         List<Payroll> payrolls = payrollRepo.findByTenantIdAndYearAndMonthOrderByEmpIdAsc(tenantId, year, month);
         List<Employee> employees = employeeRepo.findByTenantId(tenantId);
@@ -283,8 +270,7 @@ public class ReportService {
      * ESIC contribution report (tenant-aware)
      */
     public List<Map<String, Object>> getEsicReport(String orgId, int year, int month) {
-        String tenantId = TenantContext.getTenantId();
-        if (tenantId == null || tenantId.isEmpty()) tenantId = orgId;
+        String tenantId = orgId;
         
         List<Payroll> payrolls = payrollRepo.findByTenantIdAndYearAndMonthOrderByEmpIdAsc(tenantId, year, month);
         List<Employee> employees = employeeRepo.findByTenantId(tenantId);
@@ -319,11 +305,10 @@ public class ReportService {
     // =========== LOAN REPORTS ===========
 
     /**
-     * Active loans report (tenant-aware)
+     * Active loans report
      */
     public List<Map<String, Object>> getActiveLoansReport(String orgId) {
-        String tenantId = TenantContext.getTenantId();
-        if (tenantId == null || tenantId.isEmpty()) tenantId = orgId;
+        String tenantId = orgId;
         
         List<Loan> loans = loanRepo.findByTenantIdOrderBySanctionDateDesc(tenantId);
         List<Employee> employees = employeeRepo.findByTenantId(tenantId);
@@ -362,11 +347,10 @@ public class ReportService {
     }
 
     /**
-     * Loan deduction report for a month (tenant-aware)
+     * Loan deduction report for a month
      */
     public List<Map<String, Object>> getLoanDeductionReport(String orgId, int year, int month) {
-        String tenantId = TenantContext.getTenantId();
-        if (tenantId == null || tenantId.isEmpty()) tenantId = orgId;
+        String tenantId = orgId;
         
         List<Payroll> payrolls = payrollRepo.findByTenantIdAndYearAndMonthOrderByEmpIdAsc(tenantId, year, month);
         List<Employee> employees = employeeRepo.findByTenantId(tenantId);
@@ -398,20 +382,18 @@ public class ReportService {
 
     /**
      * Generate payslip data for an employee
-     * Tenant-aware with detailed loan breakdown
+     * Uses orgId passed from controller (already resolved by controller)
      */
     public Map<String, Object> getPayslip(String orgId, String empId, int year, int month) {
-        // Use tenant context for proper isolation
-        String tenantId = TenantContext.getTenantId();
-        if (tenantId == null || tenantId.isEmpty()) {
-            tenantId = orgId;
-        }
+        // Use orgId passed from controller - it's already resolved using TenantContext
+        String tenantId = orgId;
         
         Payroll payroll = payrollRepo.findByTenantIdAndEmpIdAndYearAndMonth(tenantId, empId, year, month)
                 .orElse(null);
         if (payroll == null) return null;
 
-        Employee emp = findEmployee(empId).orElse(null);
+        // Find employee in the same tenant
+        Employee emp = employeeRepo.findByTenantIdAndEmpCode(tenantId, empId).orElse(null);
         if (emp == null) return null;
 
         Map<String, Object> payslip = new LinkedHashMap<>();
