@@ -220,6 +220,17 @@ public class PayrollController {
         }
     }
 
+    /**
+     * Get outstanding loan dues for an employee
+     * Returns overdue EMIs that need to be collected
+     */
+    @GetMapping("/outstanding-dues/{empId}")
+    public ResponseEntity<Map<String, Object>> getOutstandingDues(
+            @PathVariable String empId) {
+        String tenantId = com.example.hrms.tenant.TenantContext.getTenantId();
+        return ResponseEntity.ok(payrollService.getOutstandingLoanDues(tenantId, empId));
+    }
+
     // ============ APPROVAL ============
 
     /**

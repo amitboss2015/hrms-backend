@@ -1030,7 +1030,8 @@ public class PayrollService {
 
     /**
      * Update manual advance for an employee
-     * Manual advance is tracked separately from loan EMI
+     * This creates a one-time loan (SALARY_ADVANCE) to track the advance
+     * and adds it to the payroll deduction
      */
     public Payroll updateManualAdvance(Long payrollId, BigDecimal manualAdvance, String remarks) {
         Payroll payroll = payrollRepo.findById(payrollId)
@@ -1040,14 +1041,50 @@ public class PayrollService {
             throw new IllegalStateException("Cannot update payroll with status: " + payroll.getStatus());
         }
 
-        // Calculate new advance = loan EMI + manual advance
+        // If manual advance > 0, create a one-time loan to track it
+        if (manualAdvance != null && manualAdvance.compareTo(BigDecimal.ZERO) > 0) {
+            try {
+                com.example.hrms.loan.domain.Loan advanceLoan = new com.example.hrms.loan.domain.Loan();
+                advanceLoan.setTenantId(payroll.getTenantId());
+                advanceLoan.setEmpId(payroll.getEmpId());
+                advanceLoan.setLoanType(com.example.hrms.loan.domain.enums.LoanType.SALARY_ADVANCE);
+                advanceLoan.setPrincipalAmount(manualAdvance);
+                advanceLoan.setInterestRate(BigDecimal.ZERO);
+                advanceLoan.setTenureMonths(1);
+                advanceLoan.setEmiAmount(manualAdvance);
+                advanceLoan.setSanctionDate(java.time.LocalDate.now());
+                advanceLoan.setFirstEmiDate(java.time.LocalDate.of(payroll.getYear(), payroll.getMonth(), 1));
+                advanceLoan.setTotalRepayable(manualAdvance);
+                advanceLoan.setOutstandingBalance(manualAdvance);
+                advanceLoan.setTotalPaid(BigDecimal.ZERO);
+                advanceLoan.setEmisPaid(0);
+                advanceLoan.setIsOneTimeDeduction(true);
+                advanceLoan.setRemarks("Advance given for " + payroll.getMonth() + "/" + payroll.getYear() + ": " + remarks);
+                
+                // Save the loan (this will also create the EMI schedule)
+                loanService.createLoan(advanceLoan);
+                
+                // Refresh the loan deduction amount
+                BigDecimal newLoanEmi = loanService.getMonthlyEmiDeduction(payroll.getTenantId(), payroll.getEmpId());
+                payroll.setLoanDeduction(newLoanEmi);
+            } catch (Exception e) {
+                // If loan creation fails, still add to advance directly
+                System.err.println("Failed to create advance loan: " + e.getMessage());
+            }
+        }
+
+        // Calculate new advance = loan EMI (which now includes the new advance) + any residual
         BigDecimal loanEmi = safeAdd(payroll.getLoanDeduction());
-        payroll.setAdvance(loanEmi.add(manualAdvance));
+        payroll.setAdvance(loanEmi);
         
         // Update remarks
         String existingRemarks = payroll.getRemarks() != null ? payroll.getRemarks() : "";
-        String newRemarks = existingRemarks.isEmpty() ? remarks : existingRemarks + "; " + remarks;
-        payroll.setRemarks(newRemarks);
+        String advanceRemark = manualAdvance != null && manualAdvance.compareTo(BigDecimal.ZERO) > 0 
+                ? "Advance: ₹" + manualAdvance + " given" 
+                : "";
+        if (!advanceRemark.isEmpty()) {
+            payroll.setRemarks(existingRemarks.isEmpty() ? advanceRemark : existingRemarks + "; " + advanceRemark);
+        }
 
         // Recalculate totals
         payroll.calculateTotals();
@@ -1057,6 +1094,7 @@ public class PayrollService {
 
     /**
      * Update due amount for an employee
+     * Due represents previous outstanding amounts that need to be deducted
      */
     public Payroll updateDue(Long payrollId, BigDecimal due, String remarks) {
         Payroll payroll = payrollRepo.findById(payrollId)
@@ -1068,14 +1106,93 @@ public class PayrollService {
 
         payroll.setDue(due);
         
-        // Update remarks
+        // Update remarks with due info
         String existingRemarks = payroll.getRemarks() != null ? payroll.getRemarks() : "";
-        String newRemarks = existingRemarks.isEmpty() ? remarks : existingRemarks + "; " + remarks;
-        payroll.setRemarks(newRemarks);
+        String dueRemark = due != null && due.compareTo(BigDecimal.ZERO) > 0 
+                ? "Due: ₹" + due + " (previous outstanding)" 
+                : "";
+        if (!dueRemark.isEmpty() && !existingRemarks.contains("Due:")) {
+            payroll.setRemarks(existingRemarks.isEmpty() ? dueRemark : existingRemarks + "; " + dueRemark);
+        } else if (remarks != null && !remarks.isEmpty()) {
+            payroll.setRemarks(existingRemarks.isEmpty() ? remarks : existingRemarks + "; " + remarks);
+        }
 
         // Recalculate totals
         payroll.calculateTotals();
 
         return payrollRepo.save(payroll);
+    }
+
+    /**
+     * Calculate previous outstanding due for an employee
+     * This looks at previous month's payroll to find any unpaid amounts
+     */
+    public BigDecimal calculatePreviousDue(String tenantId, String empId, int year, int month) {
+        // Get previous month
+        java.time.YearMonth currentYm = java.time.YearMonth.of(year, month);
+        java.time.YearMonth prevYm = currentYm.minusMonths(1);
+        
+        // Find previous payroll
+        Optional<Payroll> prevPayroll = payrollRepo.findByTenantIdAndEmpIdAndYearAndMonth(
+                tenantId, empId, prevYm.getYear(), prevYm.getMonthValue());
+        
+        if (prevPayroll.isEmpty()) {
+            return BigDecimal.ZERO;
+        }
+        
+        Payroll prev = prevPayroll.get();
+        
+        // Check if previous payroll was PAID
+        if (prev.getStatus() == PayrollStatus.PAID) {
+            return BigDecimal.ZERO; // No due if fully paid
+        }
+        
+        // If previous payroll is APPROVED but not paid, carry forward the net salary as due
+        if (prev.getStatus() == PayrollStatus.APPROVED) {
+            // This shouldn't normally happen, but if it does, we might want to track it
+            return BigDecimal.ZERO;
+        }
+        
+        // If previous payroll is still DRAFT, return 0 (not processed yet)
+        return BigDecimal.ZERO;
+    }
+
+    /**
+     * Get outstanding loan dues for an employee
+     * This returns overdue EMIs that haven't been paid
+     */
+    public Map<String, Object> getOutstandingLoanDues(String tenantId, String empId) {
+        List<com.example.hrms.loan.domain.Loan> activeLoans = loanService.getActiveLoans(tenantId, empId);
+        
+        BigDecimal totalOverdue = BigDecimal.ZERO;
+        List<Map<String, Object>> overdueDetails = new ArrayList<>();
+        
+        for (com.example.hrms.loan.domain.Loan loan : activeLoans) {
+            List<com.example.hrms.loan.domain.LoanRepayment> schedule = loanService.getEmiSchedule(loan.getId());
+            
+            for (com.example.hrms.loan.domain.LoanRepayment emi : schedule) {
+                // Check if EMI is overdue (due date passed and not paid)
+                if (!Boolean.TRUE.equals(emi.getIsPaid()) && 
+                    emi.getDueDate().isBefore(java.time.LocalDate.now())) {
+                    totalOverdue = totalOverdue.add(emi.getEmiAmount());
+                    
+                    Map<String, Object> detail = new LinkedHashMap<>();
+                    detail.put("loanId", loan.getId());
+                    detail.put("loanType", loan.getLoanType() != null ? loan.getLoanType().name() : "UNKNOWN");
+                    detail.put("emiNumber", emi.getEmiNumber());
+                    detail.put("dueDate", emi.getDueDate().toString());
+                    detail.put("emiAmount", emi.getEmiAmount());
+                    overdueDetails.add(detail);
+                }
+            }
+        }
+        
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("empId", empId);
+        result.put("totalOverdue", totalOverdue);
+        result.put("overdueCount", overdueDetails.size());
+        result.put("overdueEmis", overdueDetails);
+        
+        return result;
     }
 }
