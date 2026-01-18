@@ -20,13 +20,22 @@ public interface LoanRepository extends JpaRepository<Loan, Long> {
     
     List<Loan> findByTenantIdOrderBySanctionDateDesc(String tenantId);
     
+    // Sum EMI for active non-flexible loans only (flexible loans don't have fixed EMI)
     @Query("SELECT COALESCE(SUM(l.emiAmount), 0) FROM Loan l " +
-           "WHERE l.tenantId = :tenantId AND l.empId = :empId AND l.status = 'ACTIVE'")
+           "WHERE l.tenantId = :tenantId AND l.empId = :empId AND l.status = 'ACTIVE' " +
+           "AND (l.isFlexibleDeduction = false OR l.isFlexibleDeduction IS NULL)")
     BigDecimal sumActiveEmiByEmployee(@Param("tenantId") String tenantId, @Param("empId") String empId);
     
+    // Sum outstanding for all active loans including flexible
     @Query("SELECT COALESCE(SUM(l.outstandingBalance), 0) FROM Loan l " +
            "WHERE l.tenantId = :tenantId AND l.empId = :empId AND l.status = 'ACTIVE'")
     BigDecimal sumOutstandingByEmployee(@Param("tenantId") String tenantId, @Param("empId") String empId);
+    
+    // Get all active flexible loans for an employee (for payroll adjustment)
+    @Query("SELECT l FROM Loan l WHERE l.tenantId = :tenantId AND l.empId = :empId " +
+           "AND l.status = 'ACTIVE' AND l.isFlexibleDeduction = true " +
+           "ORDER BY l.sanctionDate DESC")
+    List<Loan> findActiveFlexibleLoans(@Param("tenantId") String tenantId, @Param("empId") String empId);
     
     // ============ LEGACY METHODS (backward compatibility) ============
     

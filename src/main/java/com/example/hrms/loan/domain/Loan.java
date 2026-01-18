@@ -55,6 +55,11 @@ public class Loan {
     // If true, deduct full amount from next payroll instead of EMI schedule
     @Column(nullable = false)
     private Boolean isOneTimeDeduction = false;
+    
+    // If true, admin can adjust deduction amount each month (no fixed EMI)
+    // Outstanding balance is tracked, admin decides how much to deduct
+    @Column(nullable = false)
+    private Boolean isFlexibleDeduction = false;
 
     @Column(nullable = false)
     private LocalDate sanctionDate;
@@ -108,6 +113,9 @@ public class Loan {
     
     public Boolean getIsOneTimeDeduction() { return isOneTimeDeduction; }
     public void setIsOneTimeDeduction(Boolean isOneTimeDeduction) { this.isOneTimeDeduction = isOneTimeDeduction; }
+    
+    public Boolean getIsFlexibleDeduction() { return isFlexibleDeduction; }
+    public void setIsFlexibleDeduction(Boolean isFlexibleDeduction) { this.isFlexibleDeduction = isFlexibleDeduction; }
     public String getEmpId() { return empId; }
     public void setEmpId(String empId) { this.empId = empId; }
     public LoanType getLoanType() { return loanType; }

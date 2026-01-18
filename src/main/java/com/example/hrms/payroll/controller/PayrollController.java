@@ -233,6 +233,26 @@ public class PayrollController {
     }
 
     /**
+     * Update flexible loan deduction for an employee
+     * Admin can adjust how much to deduct from flexible loans
+     */
+    @PutMapping("/{id}/flexible-loan")
+    public ResponseEntity<?> updateFlexibleLoanDeduction(
+            @PathVariable Long id,
+            @RequestBody Map<String, Object> request) {
+        try {
+            BigDecimal amount = new BigDecimal(request.get("amount").toString());
+            Long loanId = request.get("loanId") != null ? 
+                    Long.parseLong(request.get("loanId").toString()) : null;
+            String remarks = (String) request.getOrDefault("remarks", "");
+            
+            return ResponseEntity.ok(payrollService.updateFlexibleLoanDeduction(id, amount, loanId, remarks));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    /**
      * Get outstanding loan dues for an employee
      * Returns overdue EMIs that need to be collected
      */

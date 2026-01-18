@@ -30,21 +30,32 @@ public class LoanService {
 
     /**
      * Create a new loan with EMI schedule
-     * Supports regular EMI loans and one-time deductions (advances)
+     * Supports: 
+     * - Regular EMI loans (fixed monthly deductions)
+     * - One-time deductions (salary advances)
+     * - Flexible deductions (admin adjusts each payroll)
      */
     public Loan createLoan(Loan loan) {
-        // Ensure tenure is set (default to 1 for one-time)
-        if (loan.getTenureMonths() == null || loan.getTenureMonths() <= 0) {
-            loan.setTenureMonths(1);
-        }
-        
-        // For one-time deductions, EMI equals full principal
         boolean isOneTime = Boolean.TRUE.equals(loan.getIsOneTimeDeduction());
+        boolean isFlexible = Boolean.TRUE.equals(loan.getIsFlexibleDeduction());
+        
+        // Ensure tenure is set
+        if (loan.getTenureMonths() == null || loan.getTenureMonths() < 0) {
+            if (isOneTime) {
+                loan.setTenureMonths(1);
+            } else if (isFlexible) {
+                loan.setTenureMonths(0); // No fixed tenure for flexible
+            } else {
+                loan.setTenureMonths(1);
+            }
+        }
         
         // Calculate EMI if not provided
         if (loan.getEmiAmount() == null || loan.getEmiAmount().compareTo(BigDecimal.ZERO) == 0) {
             if (isOneTime) {
                 loan.setEmiAmount(loan.getPrincipalAmount()); // Full amount
+            } else if (isFlexible) {
+                loan.setEmiAmount(BigDecimal.ZERO); // No fixed EMI for flexible
             } else {
                 loan.setEmiAmount(calculateEmi(loan.getPrincipalAmount(), 
                         loan.getInterestRate(), loan.getTenureMonths()));
@@ -52,25 +63,29 @@ public class LoanService {
         }
 
         // Calculate total repayable
-        BigDecimal totalRepayable = loan.getEmiAmount().multiply(BigDecimal.valueOf(loan.getTenureMonths()));
+        BigDecimal totalRepayable;
+        if (isFlexible) {
+            // For flexible loans, total repayable = principal (no interest typically)
+            totalRepayable = loan.getPrincipalAmount();
+        } else {
+            totalRepayable = loan.getEmiAmount().multiply(BigDecimal.valueOf(loan.getTenureMonths()));
+        }
         loan.setTotalRepayable(totalRepayable);
         loan.setOutstandingBalance(totalRepayable);
         loan.setTotalPaid(BigDecimal.ZERO);
         loan.setEmisPaid(0);
 
-        if (loan.getFirstEmiDate() == null) {
-            if (isOneTime) {
-                // For one-time, deduct from next payroll (1st of next month)
-                loan.setFirstEmiDate(loan.getSanctionDate().plusMonths(1).withDayOfMonth(1));
-            } else {
-                loan.setFirstEmiDate(loan.getSanctionDate().plusMonths(1).withDayOfMonth(1));
-            }
+        if (loan.getFirstEmiDate() == null && !isFlexible) {
+            // For regular and one-time, deduct from next payroll (1st of next month)
+            loan.setFirstEmiDate(loan.getSanctionDate().plusMonths(1).withDayOfMonth(1));
         }
 
         Loan saved = loanRepo.save(loan);
 
-        // Create EMI schedule (even for one-time, creates single entry)
-        createEmiSchedule(saved);
+        // Create EMI schedule only for non-flexible loans
+        if (!isFlexible) {
+            createEmiSchedule(saved);
+        }
 
         return saved;
     }
@@ -141,10 +156,29 @@ public class LoanService {
 
     /**
      * Get total monthly EMI deduction for an employee
+     * Only includes fixed EMI loans, not flexible loans
      */
     public BigDecimal getMonthlyEmiDeduction(String orgId, String empId) {
         BigDecimal total = loanRepo.sumActiveEmiByEmployee(orgId, empId);
         return total != null ? total : BigDecimal.ZERO;
+    }
+
+    /**
+     * Get active flexible loans for an employee
+     * Admin can adjust deduction amount for these during payroll
+     */
+    public List<Loan> getActiveFlexibleLoans(String tenantId, String empId) {
+        return loanRepo.findActiveFlexibleLoans(tenantId, empId);
+    }
+    
+    /**
+     * Get total outstanding balance for flexible loans
+     */
+    public BigDecimal getFlexibleLoanOutstanding(String tenantId, String empId) {
+        List<Loan> flexibleLoans = getActiveFlexibleLoans(tenantId, empId);
+        return flexibleLoans.stream()
+                .map(Loan::getOutstandingBalance)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
     /**

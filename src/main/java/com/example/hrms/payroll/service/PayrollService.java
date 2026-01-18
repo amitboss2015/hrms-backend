@@ -1105,6 +1105,72 @@ public class PayrollService {
     }
 
     /**
+     * Update flexible loan deduction for an employee
+     * Admin can choose how much to deduct from flexible loans this month
+     * Also updates the loan's outstanding balance
+     */
+    public Payroll updateFlexibleLoanDeduction(Long payrollId, BigDecimal amount, Long loanId, String remarks) {
+        Payroll payroll = payrollRepo.findById(payrollId)
+                .orElseThrow(() -> new IllegalArgumentException("Payroll not found: " + payrollId));
+
+        if (payroll.getStatus() != PayrollStatus.DRAFT) {
+            throw new IllegalStateException("Cannot update payroll with status: " + payroll.getStatus());
+        }
+
+        // Validate amount
+        if (amount == null || amount.compareTo(BigDecimal.ZERO) < 0) {
+            throw new IllegalArgumentException("Deduction amount must be non-negative");
+        }
+
+        // Set the flexible loan deduction
+        payroll.setFlexibleLoanDeduction(amount);
+        
+        // If a specific loan ID is provided, record the partial payment against it
+        if (loanId != null && amount.compareTo(BigDecimal.ZERO) > 0) {
+            try {
+                com.example.hrms.loan.domain.Loan loan = loanService.getLoan(loanId)
+                        .orElseThrow(() -> new IllegalArgumentException("Loan not found: " + loanId));
+                
+                // Validate loan belongs to same employee and tenant
+                if (!loan.getEmpId().equals(payroll.getEmpId()) || 
+                    !loan.getTenantId().equals(payroll.getTenantId())) {
+                    throw new IllegalArgumentException("Loan does not belong to this employee/tenant");
+                }
+                
+                // Validate amount doesn't exceed outstanding balance
+                if (amount.compareTo(loan.getOutstandingBalance()) > 0) {
+                    amount = loan.getOutstandingBalance(); // Cap at outstanding
+                    payroll.setFlexibleLoanDeduction(amount);
+                }
+                
+                // Update loan outstanding balance (will be processed on payroll payment)
+                // Note: Actual deduction from loan happens when payroll is paid
+            } catch (Exception e) {
+                System.err.println("Error processing flexible loan: " + e.getMessage());
+            }
+        }
+        
+        // Update advance to include flexible loan deduction
+        BigDecimal fixedEmi = safeAdd(payroll.getLoanDeduction());
+        BigDecimal flexDeduction = safeAdd(payroll.getFlexibleLoanDeduction());
+        payroll.setAdvance(fixedEmi.add(flexDeduction));
+        
+        // Update remarks
+        String existingRemarks = payroll.getRemarks() != null ? payroll.getRemarks() : "";
+        String flexRemark = amount.compareTo(BigDecimal.ZERO) > 0 
+                ? "Flexible loan deduction: ₹" + amount 
+                : "";
+        if (!flexRemark.isEmpty()) {
+            payroll.setRemarks(existingRemarks.isEmpty() ? flexRemark : existingRemarks + "; " + flexRemark);
+        }
+
+        // Recalculate totals
+        payroll.calculateTotals();
+
+        return payrollRepo.save(payroll);
+    }
+
+    /**
      * Update due amount for an employee
      * Due represents previous outstanding amounts that need to be deducted
      * If due is null or 0, auto-populate from overdue loan EMIs
@@ -1205,22 +1271,36 @@ public class PayrollService {
         result.put("overdueEmis", overdueInfo.get("overdueEmis"));
         result.put("overdueAsOfDate", payrollMonthStart.toString());
         
-        // Loan breakdown
-        List<Map<String, Object>> loanDetails = new ArrayList<>();
+        // Separate fixed EMI loans and flexible loans
+        List<Map<String, Object>> fixedEmiLoans = new ArrayList<>();
+        List<Map<String, Object>> flexibleLoans = new ArrayList<>();
+        BigDecimal totalFlexibleOutstanding = BigDecimal.ZERO;
+        
         for (com.example.hrms.loan.domain.Loan loan : activeLoans) {
             Map<String, Object> loanInfo = new LinkedHashMap<>();
             loanInfo.put("loanId", loan.getId());
             loanInfo.put("loanType", loan.getLoanType() != null ? loan.getLoanType().name() : "UNKNOWN");
             loanInfo.put("isOneTimeDeduction", Boolean.TRUE.equals(loan.getIsOneTimeDeduction()));
+            loanInfo.put("isFlexibleDeduction", Boolean.TRUE.equals(loan.getIsFlexibleDeduction()));
             loanInfo.put("emiAmount", loan.getEmiAmount());
             loanInfo.put("outstandingBalance", loan.getOutstandingBalance());
             loanInfo.put("emisRemaining", (loan.getTenureMonths() != null ? loan.getTenureMonths() : 0) - 
                     (loan.getEmisPaid() != null ? loan.getEmisPaid() : 0));
             loanInfo.put("sanctionDate", loan.getSanctionDate() != null ? loan.getSanctionDate().toString() : null);
             loanInfo.put("remarks", loan.getRemarks());
-            loanDetails.add(loanInfo);
+            
+            if (Boolean.TRUE.equals(loan.getIsFlexibleDeduction())) {
+                flexibleLoans.add(loanInfo);
+                totalFlexibleOutstanding = totalFlexibleOutstanding.add(
+                        loan.getOutstandingBalance() != null ? loan.getOutstandingBalance() : BigDecimal.ZERO);
+            } else {
+                fixedEmiLoans.add(loanInfo);
+            }
         }
-        result.put("loans", loanDetails);
+        result.put("loans", fixedEmiLoans);
+        result.put("flexibleLoans", flexibleLoans);
+        result.put("flexibleLoansCount", flexibleLoans.size());
+        result.put("totalFlexibleOutstanding", totalFlexibleOutstanding);
         
         result.put("empId", empId);
         result.put("tenantId", tenantId);

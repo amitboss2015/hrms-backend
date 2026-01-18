@@ -127,7 +127,10 @@ public class Payroll {
     private BigDecimal due = BigDecimal.ZERO;              // DUE (Previous dues)
 
     @Column(precision = 12, scale = 2)
-    private BigDecimal loanDeduction = BigDecimal.ZERO;    // Loan EMI
+    private BigDecimal loanDeduction = BigDecimal.ZERO;    // Fixed EMI Loan deduction
+    
+    @Column(precision = 12, scale = 2)
+    private BigDecimal flexibleLoanDeduction = BigDecimal.ZERO;  // Admin-adjusted flexible loan deduction
 
     @Column(precision = 12, scale = 2)
     private BigDecimal professionalTax = BigDecimal.ZERO;
@@ -199,22 +202,22 @@ public class Payroll {
                 .add(safeAdd(bonus))
                 .add(safeAdd(incentive));
 
-        // Ensure advance includes at least the loan EMI
-        // This handles legacy data where advance might be 0 but loanDeduction has a value
+        // Calculate total loan deductions (fixed EMI + flexible loan deductions)
+        BigDecimal totalLoanDeductions = safeAdd(loanDeduction).add(safeAdd(flexibleLoanDeduction));
+        
+        // Ensure advance includes at least the total loan deductions
         BigDecimal effectiveAdvance = safeAdd(advance);
-        BigDecimal loanEmi = safeAdd(loanDeduction);
-        if (effectiveAdvance.compareTo(loanEmi) < 0) {
-            // Advance doesn't include loan EMI, use loan EMI as minimum
-            effectiveAdvance = loanEmi;
-            this.advance = loanEmi; // Fix the advance value
+        if (effectiveAdvance.compareTo(totalLoanDeductions) < 0) {
+            effectiveAdvance = totalLoanDeductions;
+            this.advance = totalLoanDeductions;
         }
 
         // Calculate total deductions
-        // ADV column includes: loan EMI + any manual advances
+        // ADV column includes: fixed EMI + flexible loan deductions + any manual advances
         // DUE column: previous month's outstanding dues
         this.totalDeductions = safeAdd(esiEmployee)
                 .add(safeAdd(pfEmployee))
-                .add(effectiveAdvance)       // ADV includes loan deductions
+                .add(effectiveAdvance)       // ADV includes all loan deductions
                 .add(safeAdd(due))           // DUE for previous outstanding
                 .add(safeAdd(professionalTax))
                 .add(safeAdd(tds))
@@ -357,6 +360,9 @@ public class Payroll {
 
     public BigDecimal getLoanDeduction() { return loanDeduction; }
     public void setLoanDeduction(BigDecimal loanDeduction) { this.loanDeduction = loanDeduction; }
+    
+    public BigDecimal getFlexibleLoanDeduction() { return flexibleLoanDeduction; }
+    public void setFlexibleLoanDeduction(BigDecimal flexibleLoanDeduction) { this.flexibleLoanDeduction = flexibleLoanDeduction; }
 
     public BigDecimal getProfessionalTax() { return professionalTax; }
     public void setProfessionalTax(BigDecimal professionalTax) { this.professionalTax = professionalTax; }

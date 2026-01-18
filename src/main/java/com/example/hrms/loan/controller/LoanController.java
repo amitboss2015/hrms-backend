@@ -91,6 +91,7 @@ public class LoanController {
             map.put("tenureMonths", loan.getTenureMonths());
             map.put("emiAmount", loan.getEmiAmount());
             map.put("isOneTimeDeduction", Boolean.TRUE.equals(loan.getIsOneTimeDeduction()));
+            map.put("isFlexibleDeduction", Boolean.TRUE.equals(loan.getIsFlexibleDeduction()));
             map.put("sanctionDate", loan.getSanctionDate() != null ? loan.getSanctionDate().toString() : null);
             map.put("firstEmiDate", loan.getFirstEmiDate() != null ? loan.getFirstEmiDate().toString() : null);
             map.put("totalRepayable", loan.getTotalRepayable());
@@ -130,6 +131,7 @@ public class LoanController {
         result.put("tenureMonths", loan.getTenureMonths());
         result.put("emiAmount", loan.getEmiAmount());
         result.put("isOneTimeDeduction", Boolean.TRUE.equals(loan.getIsOneTimeDeduction()));
+        result.put("isFlexibleDeduction", Boolean.TRUE.equals(loan.getIsFlexibleDeduction()));
         result.put("sanctionDate", loan.getSanctionDate() != null ? loan.getSanctionDate().toString() : null);
         result.put("firstEmiDate", loan.getFirstEmiDate() != null ? loan.getFirstEmiDate().toString() : null);
         result.put("totalRepayable", loan.getTotalRepayable());
@@ -184,20 +186,30 @@ public class LoanController {
                     || "SALARY_ADVANCE".equals(loanTypeStr.toUpperCase());
             loan.setIsOneTimeDeduction(isOneTime);
             
-            // Tenure is optional for one-time deductions
+            // Check if this is a flexible deduction loan (admin adjusts each month)
+            boolean isFlexible = Boolean.TRUE.equals(request.get("isFlexibleDeduction"));
+            loan.setIsFlexibleDeduction(isFlexible);
+            
+            // Tenure is optional for one-time or flexible deductions
             if (request.get("tenureMonths") != null) {
                 loan.setTenureMonths(Integer.parseInt(request.get("tenureMonths").toString()));
             } else if (isOneTime) {
                 loan.setTenureMonths(1); // One-time = 1 month
+            } else if (isFlexible) {
+                loan.setTenureMonths(0); // Flexible = no fixed tenure
             } else {
                 return ResponseEntity.badRequest().body(Map.of("error", "tenureMonths is required for EMI-based loans"));
             }
             
-            // EMI can be provided or calculated (for one-time, EMI = full amount)
+            // EMI can be provided or calculated 
+            // For one-time, EMI = full amount
+            // For flexible, EMI is optional (admin decides each payroll)
             if (request.get("emiAmount") != null) {
                 loan.setEmiAmount(new BigDecimal(request.get("emiAmount").toString()));
             } else if (isOneTime) {
                 loan.setEmiAmount(loan.getPrincipalAmount()); // Full amount as single deduction
+            } else if (isFlexible) {
+                loan.setEmiAmount(BigDecimal.ZERO); // No fixed EMI for flexible loans
             }
             
             // Set dates
@@ -221,6 +233,7 @@ public class LoanController {
             response.put("emiAmount", saved.getEmiAmount());
             response.put("totalRepayable", saved.getTotalRepayable());
             response.put("isOneTimeDeduction", saved.getIsOneTimeDeduction());
+            response.put("isFlexibleDeduction", saved.getIsFlexibleDeduction());
             if (saved.getFirstEmiDate() != null) {
                 response.put("firstEmiDate", saved.getFirstEmiDate().toString());
             }
@@ -322,6 +335,63 @@ public class LoanController {
         String tenantId = TenantContext.getTenantId();
         if (tenantId == null || tenantId.isEmpty()) tenantId = orgId;
         return loanService.getActiveLoans(tenantId, empId);
+    }
+
+    /**
+     * Record partial payment for flexible loan
+     * Admin can deduct any amount from outstanding balance
+     */
+    @PostMapping("/{id}/partial-payment")
+    public ResponseEntity<Map<String, Object>> recordPartialPayment(
+            @PathVariable Long id,
+            @RequestBody Map<String, Object> request) {
+        try {
+            Optional<Loan> loanOpt = loanService.getLoan(id);
+            if (loanOpt.isEmpty()) {
+                return ResponseEntity.notFound().build();
+            }
+            
+            Loan loan = loanOpt.get();
+            BigDecimal amount = new BigDecimal(request.get("amount").toString());
+            String remarks = (String) request.getOrDefault("remarks", "Partial payment");
+            
+            // Validate amount
+            if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Amount must be positive"));
+            }
+            if (amount.compareTo(loan.getOutstandingBalance()) > 0) {
+                return ResponseEntity.badRequest().body(Map.of("error", 
+                    "Amount cannot exceed outstanding balance: " + loan.getOutstandingBalance()));
+            }
+            
+            // Update loan
+            BigDecimal newPaid = loan.getTotalPaid().add(amount);
+            BigDecimal newOutstanding = loan.getOutstandingBalance().subtract(amount);
+            
+            loan.setTotalPaid(newPaid);
+            loan.setOutstandingBalance(newOutstanding);
+            loan.setRemarks(remarks);
+            
+            // Close loan if fully paid
+            if (newOutstanding.compareTo(BigDecimal.ZERO) <= 0) {
+                loan.setStatus(LoanStatus.CLOSED);
+                loan.setClosedDate(LocalDate.now());
+                loan.setOutstandingBalance(BigDecimal.ZERO);
+            }
+            
+            loanService.updateLoan(id, loan);
+            
+            return ResponseEntity.ok(Map.of(
+                "message", "Payment recorded successfully",
+                "loanId", loan.getId(),
+                "amountPaid", amount,
+                "totalPaid", loan.getTotalPaid(),
+                "outstandingBalance", loan.getOutstandingBalance(),
+                "status", loan.getStatus().name()
+            ));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
     }
 
     /**
