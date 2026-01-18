@@ -62,12 +62,19 @@ public class ReportController {
     }
 
     @GetMapping("/payroll/payslip")
-    public Map<String, Object> getPayslip(
+    public org.springframework.http.ResponseEntity<Map<String, Object>> getPayslip(
             @RequestParam String orgId,
             @RequestParam String empId,
             @RequestParam Integer year,
             @RequestParam Integer month) {
-        return reportService.getPayslip(orgId, empId, year, month);
+        Map<String, Object> payslip = reportService.getPayslip(orgId, empId, year, month);
+        if (payslip == null) {
+            return org.springframework.http.ResponseEntity.status(404).body(Map.of(
+                "error", "Payslip not found",
+                "message", "No payroll record found for employee " + empId + " for " + month + "/" + year + ". Please generate payroll first."
+            ));
+        }
+        return org.springframework.http.ResponseEntity.ok(payslip);
     }
 
     // =========== LOAN REPORTS ===========
