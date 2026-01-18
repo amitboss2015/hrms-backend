@@ -702,6 +702,14 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
     }
     
     /**
+     * Get employee by tenant and code
+     */
+    @Override
+    public Employee getEmployeeByCode(String tenantId, String empCode) {
+        return employeeRepo.findByTenantIdAndEmpCode(tenantId, empCode).orElse(null);
+    }
+    
+    /**
      * Check if employee has approved leave for a date
      */
     @Override
@@ -709,5 +717,17 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
         List<EmployeeLeave> leaves = leaveRepo.findByTenantIdAndEmpIdAndStartDateLessThanEqualAndEndDateGreaterThanEqual(
             tenantId, empCode, date, date);
         return leaves.stream().anyMatch(l -> l.getStatus() == LeaveStatus.APPROVED);
+    }
+    
+    /**
+     * Get all approved leaves for a period
+     */
+    @Override
+    public List<EmployeeLeave> getApprovedLeavesForPeriod(String tenantId, LocalDate from, LocalDate to) {
+        List<EmployeeLeave> allLeaves = leaveRepo.findByTenantIdAndStartDateLessThanEqualAndEndDateGreaterThanEqual(
+            tenantId, to, from);
+        return allLeaves.stream()
+            .filter(l -> l.getStatus() == LeaveStatus.APPROVED)
+            .toList();
     }
 }

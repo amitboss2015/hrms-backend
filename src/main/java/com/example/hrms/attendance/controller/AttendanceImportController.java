@@ -209,7 +209,9 @@ public class AttendanceImportController {
 
     /**
      * Sync attendance with leave records for a specific month/year.
-     * This is a lightweight operation that updates ABSENT days to LEAVE if leave records exist.
+     * This is a lightweight operation that:
+     * 1. Updates ABSENT days to LEAVE if leave records exist
+     * 2. Creates LEAVE attendance records for days with no attendance but approved leaves
      */
     @PostMapping("/import/recalculate")
     @Transactional
@@ -218,26 +220,27 @@ public class AttendanceImportController {
             @RequestParam("year") int year) {
 
         String tenantId = TenantContext.getTenantId();
+        Long orgId = getOrgIdFromTenant(tenantId);
         YearMonth ym = YearMonth.of(year, month);
         java.time.LocalDate from = ym.atDay(1);
         java.time.LocalDate to = ym.atEndOfMonth();
 
         log.info("Syncing attendance with leaves for tenant={}, month={}/{}", tenantId, month, year);
 
-        // Get all attendance days marked as ABSENT for this period
+        int updated = 0;
+        int created = 0;
+
+        // Step 1: Update existing ABSENT days to LEAVE if leave exists
         List<com.example.hrms.attendance.domain.AttendanceDay> absentDays = 
             dayRepo.findByTenantIdAndWorkDateBetweenAndStatus(tenantId, from, to, "ABSENT");
         
-        int updated = 0;
         for (var day : absentDays) {
-            // Get employee code for leave lookup
             var employee = importService.getEmployeeById(day.getEmployeeId());
             if (employee == null) continue;
             
             String empCode = employee.getEmpCode();
             if (empCode == null) continue;
             
-            // Check if there's an approved leave for this date
             boolean hasLeave = importService.hasApprovedLeave(tenantId, empCode, day.getWorkDate());
             if (hasLeave) {
                 day.setStatus("LEAVE");
@@ -246,10 +249,46 @@ public class AttendanceImportController {
             }
         }
 
+        // Step 2: Find approved leaves in this period and create LEAVE records if no attendance exists
+        List<com.example.hrms.leave.domain.EmployeeLeave> leaves = 
+            importService.getApprovedLeavesForPeriod(tenantId, from, to);
+        
+        for (var leave : leaves) {
+            // For each day in the leave period
+            java.time.LocalDate leaveDate = leave.getStartDate();
+            while (!leaveDate.isAfter(leave.getEndDate()) && !leaveDate.isAfter(to)) {
+                if (!leaveDate.isBefore(from)) {
+                    // Get employee ID
+                    var employee = importService.getEmployeeByCode(tenantId, leave.getEmpId());
+                    if (employee != null) {
+                        // Check if attendance record exists for this date
+                        boolean exists = dayRepo.existsByTenantIdAndEmployeeIdAndWorkDate(tenantId, employee.getId(), leaveDate);
+                        if (!exists) {
+                            // Create LEAVE record
+                            com.example.hrms.attendance.domain.AttendanceDay leaveDay = 
+                                com.example.hrms.attendance.domain.AttendanceDay.builder()
+                                    .tenantId(tenantId)
+                                    .orgId(orgId)
+                                    .employeeId(employee.getId())
+                                    .workDate(leaveDate)
+                                    .status("LEAVE")
+                                    .totalWorkMin(0)
+                                    .punchCount(0)
+                                    .build();
+                            dayRepo.save(leaveDay);
+                            created++;
+                        }
+                    }
+                }
+                leaveDate = leaveDate.plusDays(1);
+            }
+        }
+
         Map<String, Object> result = new HashMap<>();
         result.put("success", true);
-        result.put("message", "Updated " + updated + " days from ABSENT to LEAVE for " + ym);
+        result.put("message", "Updated " + updated + " ABSENT→LEAVE, Created " + created + " new LEAVE records for " + ym);
         result.put("daysUpdated", updated);
+        result.put("daysCreated", created);
         return ResponseEntity.ok(result);
     }
 

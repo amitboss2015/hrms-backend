@@ -37,7 +37,18 @@ public interface AttendanceImportService {
     Employee getEmployeeById(Long employeeId);
     
     /**
+     * Get employee by tenant and code
+     */
+    Employee getEmployeeByCode(String tenantId, String empCode);
+    
+    /**
      * Check if employee has approved leave for a date
      */
     boolean hasApprovedLeave(String tenantId, String empCode, LocalDate date);
+    
+    /**
+     * Get all approved leaves for a period
+     */
+    java.util.List<com.example.hrms.leave.domain.EmployeeLeave> getApprovedLeavesForPeriod(
+        String tenantId, LocalDate from, LocalDate to);
 }
