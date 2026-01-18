@@ -127,6 +127,7 @@ public class CompanyManagementService {
 
         // 1. Attendance data
         deletedCounts.put("attendance_punch", deleteByTenantId("attendance_punch", tenantId));
+        deletedCounts.put("attendance_punches", deleteByTenantId("attendance_punches", tenantId));
         deletedCounts.put("attendance_session", deleteByTenantId("attendance_session", tenantId));
         deletedCounts.put("attendance_day", deleteByTenantId("attendance_day", tenantId));
         deletedCounts.put("overtime_allowance", deleteByTenantId("overtime_allowance", tenantId));
@@ -167,6 +168,7 @@ public class CompanyManagementService {
         deletedCounts.put("users", deleteNonSuperAdminUsers(tenantId));
 
         // 10. Registration and trial tracking
+        deletedCounts.put("registration_attempts", deleteRegistrationAttempts(tenantId));
         deletedCounts.put("trial_tracking", deleteByTenantId("trial_tracking", tenantId));
         deletedCounts.put("company_registrations", deleteByTenantId("company_registrations", tenantId));
 
@@ -224,6 +226,31 @@ public class CompanyManagementService {
             Integer count = jdbcTemplate.queryForObject(sql, Integer.class, tenantId);
             return count != null ? count : 0;
         } catch (Exception e) {
+            return 0;
+        }
+    }
+    
+    /**
+     * Delete registration attempts by finding associated email from company_registrations
+     */
+    private int deleteRegistrationAttempts(String tenantId) {
+        try {
+            // First find emails associated with this tenant from company_registrations
+            String emailSql = "SELECT DISTINCT email FROM company_registrations WHERE tenant_id = ?";
+            List<String> emails = jdbcTemplate.queryForList(emailSql, String.class, tenantId);
+            
+            int totalDeleted = 0;
+            for (String email : emails) {
+                String deleteSql = "DELETE FROM registration_attempts WHERE email = ?";
+                totalDeleted += jdbcTemplate.update(deleteSql, email);
+            }
+            
+            if (totalDeleted > 0) {
+                log.info("  Deleted {} registration attempts for tenant {}", totalDeleted, tenantId);
+            }
+            return totalDeleted;
+        } catch (Exception e) {
+            log.debug("Could not delete registration_attempts: {}", e.getMessage());
             return 0;
         }
     }
