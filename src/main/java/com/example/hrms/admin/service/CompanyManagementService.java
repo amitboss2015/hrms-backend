@@ -143,15 +143,15 @@ public class CompanyManagementService {
         deletedCounts.put("leave_type", deleteByTenantId("leave_type", tenantId));
 
         // 4. Loan data
-        deletedCounts.put("loan_repayment", deleteByTenantId("loan_repayment", tenantId));
-        deletedCounts.put("loan", deleteByTenantId("loan", tenantId));
+        deletedCounts.put("loan_repayments", deleteByTenantId("loan_repayments", tenantId));
+        deletedCounts.put("loans", deleteByTenantId("loans", tenantId));
 
         // 5. Payroll data
         deletedCounts.put("payroll", deleteByTenantId("payroll", tenantId));
         deletedCounts.put("salary_overtime_config", deleteByTenantId("salary_overtime_config", tenantId));
 
         // 6. Employee assignments
-        deletedCounts.put("employee_shift_assignment", deleteByTenantId("employee_shift_assignment", tenantId));
+        deletedCounts.put("employee_shift_assignments", deleteByTenantId("employee_shift_assignments", tenantId));
 
         // 7. Employees
         deletedCounts.put("employees", deleteByTenantId("employees", tenantId));
@@ -162,13 +162,13 @@ public class CompanyManagementService {
         deletedCounts.put("weekly_off_config", deleteByTenantId("weekly_off_config", tenantId));
 
         // 9. Users (admin accounts) - PRESERVE SUPER_ADMIN users
-        deletedCounts.put("refresh_token", deleteByTenantId("refresh_token", tenantId));
+        deletedCounts.put("refresh_tokens", deleteByTenantId("refresh_tokens", tenantId));
         deletedCounts.put("login_audit", deleteByTenantId("login_audit", tenantId));
         deletedCounts.put("users", deleteNonSuperAdminUsers(tenantId));
 
         // 10. Registration and trial tracking
         deletedCounts.put("trial_tracking", deleteByTenantId("trial_tracking", tenantId));
-        deletedCounts.put("company_registration", deleteByTenantId("company_registration", tenantId));
+        deletedCounts.put("company_registrations", deleteByTenantId("company_registrations", tenantId));
 
         // 11. Finally delete the tenant
         tenantRepo.deleteById(tenantId);
@@ -211,7 +211,7 @@ public class CompanyManagementService {
         counts.put("attendance_records", countByTenantId("attendance_day", tenantId));
         counts.put("payroll_records", countByTenantId("payroll", tenantId));
         counts.put("leave_records", countByTenantId("employee_leave", tenantId));
-        counts.put("loan_records", countByTenantId("loan", tenantId));
+        counts.put("loan_records", countByTenantId("loans", tenantId));
         counts.put("shifts", countByTenantId("shifts", tenantId));
         counts.put("users", countByTenantId("users", tenantId));
         
