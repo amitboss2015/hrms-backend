@@ -360,8 +360,10 @@ public class PayrollService {
         BigDecimal loanEmi = loanService.getMonthlyEmiDeduction(tenantId, payroll.getEmpId());
         payroll.setLoanDeduction(loanEmi); // Keep for detailed reporting
 
-        // Auto-populate Due from overdue loan EMIs
-        Map<String, Object> overdueInfo = getOutstandingLoanDues(tenantId, payroll.getEmpId());
+        // Auto-populate Due from overdue loan EMIs (as of payroll month start)
+        // For July 2025 payroll, this checks for EMIs overdue before July 1, 2025
+        LocalDate payrollMonthStart = LocalDate.of(payroll.getYear(), payroll.getMonth(), 1);
+        Map<String, Object> overdueInfo = getOutstandingLoanDues(tenantId, payroll.getEmpId(), payrollMonthStart);
         BigDecimal overdueLoanAmount = (BigDecimal) overdueInfo.get("totalOverdue");
         if (overdueLoanAmount != null && overdueLoanAmount.compareTo(BigDecimal.ZERO) > 0) {
             // Add overdue EMIs to Due column
@@ -1194,11 +1196,14 @@ public class PayrollService {
         List<com.example.hrms.loan.domain.Loan> activeLoans = loanService.getActiveLoans(tenantId, empId);
         result.put("activeLoansCount", activeLoans.size());
         
-        // Get outstanding dues (overdue EMIs)
-        Map<String, Object> overdueInfo = getOutstandingLoanDues(tenantId, empId);
+        // Get outstanding dues (overdue EMIs) as of the payroll month start date
+        // For July 2025 payroll, we want EMIs overdue before July 1, 2025
+        LocalDate payrollMonthStart = LocalDate.of(year, month, 1);
+        Map<String, Object> overdueInfo = getOutstandingLoanDues(tenantId, empId, payrollMonthStart);
         result.put("overdueDues", overdueInfo.get("totalOverdue"));
         result.put("overdueCount", overdueInfo.get("overdueCount"));
         result.put("overdueEmis", overdueInfo.get("overdueEmis"));
+        result.put("overdueAsOfDate", payrollMonthStart.toString());
         
         // Loan breakdown
         List<Map<String, Object>> loanDetails = new ArrayList<>();
@@ -1226,11 +1231,16 @@ public class PayrollService {
     }
 
     /**
-     * Get outstanding loan dues for an employee
-     * This returns overdue EMIs that haven't been paid
+     * Get outstanding loan dues for an employee as of a specific date
+     * This returns overdue EMIs that haven't been paid before the given date
+     * @param asOfDate - the date to check overdue against (typically the payroll month start date)
+     *                   If null, uses current date (for UI display of current outstanding)
      */
-    public Map<String, Object> getOutstandingLoanDues(String tenantId, String empId) {
+    public Map<String, Object> getOutstandingLoanDues(String tenantId, String empId, LocalDate asOfDate) {
         List<com.example.hrms.loan.domain.Loan> activeLoans = loanService.getActiveLoans(tenantId, empId);
+        
+        // Default to current date if not specified
+        LocalDate checkDate = asOfDate != null ? asOfDate : LocalDate.now();
         
         BigDecimal totalOverdue = BigDecimal.ZERO;
         List<Map<String, Object>> overdueDetails = new ArrayList<>();
@@ -1239,9 +1249,9 @@ public class PayrollService {
             List<com.example.hrms.loan.domain.LoanRepayment> schedule = loanService.getEmiSchedule(loan.getId());
             
             for (com.example.hrms.loan.domain.LoanRepayment emi : schedule) {
-                // Check if EMI is overdue (due date passed and not paid)
+                // Check if EMI is overdue (due date passed before checkDate and not paid)
                 if (!Boolean.TRUE.equals(emi.getIsPaid()) && 
-                    emi.getDueDate().isBefore(java.time.LocalDate.now())) {
+                    emi.getDueDate().isBefore(checkDate)) {
                     totalOverdue = totalOverdue.add(emi.getEmiAmount());
                     
                     Map<String, Object> detail = new LinkedHashMap<>();
@@ -1260,7 +1270,15 @@ public class PayrollService {
         result.put("totalOverdue", totalOverdue);
         result.put("overdueCount", overdueDetails.size());
         result.put("overdueEmis", overdueDetails);
+        result.put("asOfDate", checkDate.toString());
         
         return result;
+    }
+    
+    /**
+     * Overload for backward compatibility - uses current date
+     */
+    public Map<String, Object> getOutstandingLoanDues(String tenantId, String empId) {
+        return getOutstandingLoanDues(tenantId, empId, null);
     }
 }
