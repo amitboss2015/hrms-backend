@@ -30,12 +30,25 @@ public class LoanService {
 
     /**
      * Create a new loan with EMI schedule
+     * Supports regular EMI loans and one-time deductions (advances)
      */
     public Loan createLoan(Loan loan) {
+        // Ensure tenure is set (default to 1 for one-time)
+        if (loan.getTenureMonths() == null || loan.getTenureMonths() <= 0) {
+            loan.setTenureMonths(1);
+        }
+        
+        // For one-time deductions, EMI equals full principal
+        boolean isOneTime = Boolean.TRUE.equals(loan.getIsOneTimeDeduction());
+        
         // Calculate EMI if not provided
         if (loan.getEmiAmount() == null || loan.getEmiAmount().compareTo(BigDecimal.ZERO) == 0) {
-            loan.setEmiAmount(calculateEmi(loan.getPrincipalAmount(), 
-                    loan.getInterestRate(), loan.getTenureMonths()));
+            if (isOneTime) {
+                loan.setEmiAmount(loan.getPrincipalAmount()); // Full amount
+            } else {
+                loan.setEmiAmount(calculateEmi(loan.getPrincipalAmount(), 
+                        loan.getInterestRate(), loan.getTenureMonths()));
+            }
         }
 
         // Calculate total repayable
@@ -46,12 +59,17 @@ public class LoanService {
         loan.setEmisPaid(0);
 
         if (loan.getFirstEmiDate() == null) {
-            loan.setFirstEmiDate(loan.getSanctionDate().plusMonths(1).withDayOfMonth(1));
+            if (isOneTime) {
+                // For one-time, deduct from next payroll (1st of next month)
+                loan.setFirstEmiDate(loan.getSanctionDate().plusMonths(1).withDayOfMonth(1));
+            } else {
+                loan.setFirstEmiDate(loan.getSanctionDate().plusMonths(1).withDayOfMonth(1));
+            }
         }
 
         Loan saved = loanRepo.save(loan);
 
-        // Create EMI schedule
+        // Create EMI schedule (even for one-time, creates single entry)
         createEmiSchedule(saved);
 
         return saved;

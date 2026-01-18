@@ -9,6 +9,7 @@ import java.time.LocalDate;
 /**
  * Represents a loan given to an employee.
  * EMI will be deducted from monthly salary.
+ * Supports: Regular EMI loans, Salary Advances, One-time adjustments
  */
 @Entity
 @Table(name = "loans", 
@@ -22,9 +23,13 @@ public class Loan {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    // Multi-tenancy support (replaces orgId)
-    @Column(nullable = false, length = 50)
+    // Multi-tenancy support
+    @Column(name = "tenant_id", nullable = false, length = 50)
     private String tenantId;
+    
+    // Legacy column - keep for backward compatibility, maps to same value as tenantId
+    @Column(name = "org_id", nullable = false)
+    private String orgId;
 
     @Column(nullable = false)
     private String empId;
@@ -39,11 +44,17 @@ public class Loan {
     @Column(precision = 5, scale = 2)
     private BigDecimal interestRate = BigDecimal.ZERO; // Annual interest rate %
 
-    @Column(nullable = false)
+    // Tenure is optional for one-time adjustments (e.g., salary advance paid in full)
+    @Column
     private Integer tenureMonths;
 
-    @Column(nullable = false, precision = 12, scale = 2)
+    // EMI is optional for one-time adjustments
+    @Column(precision = 12, scale = 2)
     private BigDecimal emiAmount;
+    
+    // If true, deduct full amount from next payroll instead of EMI schedule
+    @Column(nullable = false)
+    private Boolean isOneTimeDeduction = false;
 
     @Column(nullable = false)
     private LocalDate sanctionDate;
@@ -82,11 +93,21 @@ public class Loan {
     // Getters and Setters
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
+    
     public String getTenantId() { return tenantId; }
-    public void setTenantId(String tenantId) { this.tenantId = tenantId; }
-    // Backward compatibility
-    public String getOrgId() { return tenantId; }
-    public void setOrgId(String orgId) { this.tenantId = orgId; }
+    public void setTenantId(String tenantId) { 
+        this.tenantId = tenantId; 
+        this.orgId = tenantId; // Keep both in sync
+    }
+    
+    public String getOrgId() { return orgId; }
+    public void setOrgId(String orgId) { 
+        this.orgId = orgId; 
+        this.tenantId = orgId; // Keep both in sync
+    }
+    
+    public Boolean getIsOneTimeDeduction() { return isOneTimeDeduction; }
+    public void setIsOneTimeDeduction(Boolean isOneTimeDeduction) { this.isOneTimeDeduction = isOneTimeDeduction; }
     public String getEmpId() { return empId; }
     public void setEmpId(String empId) { this.empId = empId; }
     public LoanType getLoanType() { return loanType; }

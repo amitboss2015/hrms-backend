@@ -41,14 +41,23 @@ public class LoanController {
      * List all loans or filter by employee
      */
     @GetMapping
-    public List<Map<String, Object>> listLoans(@RequestParam String orgId,
+    public List<Map<String, Object>> listLoans(@RequestParam(required = false) String orgId,
                                                 @RequestParam(required = false) String empId,
                                                 @RequestParam(required = false) String status) {
+        // Use TenantContext, fallback to orgId param for backward compatibility
+        String tenantId = TenantContext.getTenantId();
+        if (tenantId == null || tenantId.isEmpty()) {
+            tenantId = orgId;
+        }
+        if (tenantId == null || tenantId.isEmpty()) {
+            return List.of(); // No tenant context
+        }
+        
         List<Loan> loans;
         if (empId != null && !empId.isEmpty()) {
-            loans = loanService.getEmployeeLoans(orgId, empId);
+            loans = loanService.getEmployeeLoans(tenantId, empId);
         } else {
-            loans = loanService.getAllLoans(orgId);
+            loans = loanService.getAllLoans(tenantId);
         }
         
         // Filter by status if provided
@@ -73,6 +82,7 @@ public class LoanController {
             
             map.put("id", loan.getId());
             map.put("orgId", loan.getOrgId());
+            map.put("tenantId", loan.getTenantId());
             map.put("empId", loan.getEmpId());
             map.put("empName", emp != null ? getEmployeeName(emp) : loan.getEmpId());
             map.put("loanType", loan.getLoanType() != null ? loan.getLoanType().name() : null);
@@ -80,13 +90,14 @@ public class LoanController {
             map.put("interestRate", loan.getInterestRate());
             map.put("tenureMonths", loan.getTenureMonths());
             map.put("emiAmount", loan.getEmiAmount());
+            map.put("isOneTimeDeduction", Boolean.TRUE.equals(loan.getIsOneTimeDeduction()));
             map.put("sanctionDate", loan.getSanctionDate() != null ? loan.getSanctionDate().toString() : null);
             map.put("firstEmiDate", loan.getFirstEmiDate() != null ? loan.getFirstEmiDate().toString() : null);
             map.put("totalRepayable", loan.getTotalRepayable());
             map.put("totalPaid", loan.getTotalPaid());
             map.put("outstandingBalance", loan.getOutstandingBalance());
             map.put("emisPaid", loan.getEmisPaid());
-            map.put("emisRemaining", loan.getTenureMonths() - loan.getEmisPaid());
+            map.put("emisRemaining", loan.getTenureMonths() != null ? loan.getTenureMonths() - loan.getEmisPaid() : 0);
             map.put("status", loan.getStatus().name());
             map.put("remarks", loan.getRemarks());
             
@@ -110,6 +121,7 @@ public class LoanController {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("id", loan.getId());
         result.put("orgId", loan.getOrgId());
+        result.put("tenantId", loan.getTenantId());
         result.put("empId", loan.getEmpId());
         result.put("empName", emp != null ? getEmployeeName(emp) : loan.getEmpId());
         result.put("loanType", loan.getLoanType() != null ? loan.getLoanType().name() : null);
@@ -117,13 +129,14 @@ public class LoanController {
         result.put("interestRate", loan.getInterestRate());
         result.put("tenureMonths", loan.getTenureMonths());
         result.put("emiAmount", loan.getEmiAmount());
+        result.put("isOneTimeDeduction", Boolean.TRUE.equals(loan.getIsOneTimeDeduction()));
         result.put("sanctionDate", loan.getSanctionDate() != null ? loan.getSanctionDate().toString() : null);
         result.put("firstEmiDate", loan.getFirstEmiDate() != null ? loan.getFirstEmiDate().toString() : null);
         result.put("totalRepayable", loan.getTotalRepayable());
         result.put("totalPaid", loan.getTotalPaid());
         result.put("outstandingBalance", loan.getOutstandingBalance());
         result.put("emisPaid", loan.getEmisPaid());
-        result.put("emisRemaining", loan.getTenureMonths() - loan.getEmisPaid());
+        result.put("emisRemaining", loan.getTenureMonths() != null ? loan.getTenureMonths() - loan.getEmisPaid() : 0);
         result.put("status", loan.getStatus().name());
         result.put("remarks", loan.getRemarks());
         result.put("closedDate", loan.getClosedDate() != null ? loan.getClosedDate().toString() : null);
@@ -132,13 +145,23 @@ public class LoanController {
     }
 
     /**
-     * Admin: Create a new loan for employee
+     * Admin: Create a new loan/advance for employee
+     * Supports:
+     * - Regular EMI loans (with tenureMonths, optional emiAmount)
+     * - Salary advances (one-time deduction from next payroll)
+     * - Manual adjustments (can be adjusted during payroll)
      */
     @PostMapping
     public ResponseEntity<Map<String, Object>> createLoan(@RequestBody Map<String, Object> request) {
         try {
+            // Use TenantContext for multi-tenancy
+            String tenantId = TenantContext.getTenantId();
+            if (tenantId == null || tenantId.isEmpty()) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Tenant context not available"));
+            }
+            
             Loan loan = new Loan();
-            loan.setOrgId((String) request.getOrDefault("orgId", "1"));
+            loan.setTenantId(tenantId); // This also sets orgId via setter
             loan.setEmpId((String) request.get("empId"));
             
             // Validate employee exists (tenant-aware lookup)
@@ -155,11 +178,26 @@ public class LoanController {
             loan.setInterestRate(request.get("interestRate") != null 
                     ? new BigDecimal(request.get("interestRate").toString()) 
                     : BigDecimal.ZERO);
-            loan.setTenureMonths(Integer.parseInt(request.get("tenureMonths").toString()));
             
-            // EMI can be provided or calculated
+            // Check if this is a one-time deduction (salary advance / adjustment)
+            boolean isOneTime = Boolean.TRUE.equals(request.get("isOneTimeDeduction")) 
+                    || "SALARY_ADVANCE".equals(loanTypeStr.toUpperCase());
+            loan.setIsOneTimeDeduction(isOneTime);
+            
+            // Tenure is optional for one-time deductions
+            if (request.get("tenureMonths") != null) {
+                loan.setTenureMonths(Integer.parseInt(request.get("tenureMonths").toString()));
+            } else if (isOneTime) {
+                loan.setTenureMonths(1); // One-time = 1 month
+            } else {
+                return ResponseEntity.badRequest().body(Map.of("error", "tenureMonths is required for EMI-based loans"));
+            }
+            
+            // EMI can be provided or calculated (for one-time, EMI = full amount)
             if (request.get("emiAmount") != null) {
                 loan.setEmiAmount(new BigDecimal(request.get("emiAmount").toString()));
+            } else if (isOneTime) {
+                loan.setEmiAmount(loan.getPrincipalAmount()); // Full amount as single deduction
             }
             
             // Set dates
@@ -177,13 +215,17 @@ public class LoanController {
             
             Loan saved = loanService.createLoan(loan);
             
-            return ResponseEntity.ok(Map.of(
-                    "message", "Loan created successfully",
-                    "loanId", saved.getId(),
-                    "emiAmount", saved.getEmiAmount(),
-                    "totalRepayable", saved.getTotalRepayable(),
-                    "firstEmiDate", saved.getFirstEmiDate().toString()
-            ));
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("message", isOneTime ? "Advance/adjustment created successfully" : "Loan created successfully");
+            response.put("loanId", saved.getId());
+            response.put("emiAmount", saved.getEmiAmount());
+            response.put("totalRepayable", saved.getTotalRepayable());
+            response.put("isOneTimeDeduction", saved.getIsOneTimeDeduction());
+            if (saved.getFirstEmiDate() != null) {
+                response.put("firstEmiDate", saved.getFirstEmiDate().toString());
+            }
+            
+            return ResponseEntity.ok(response);
         } catch (Exception e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
@@ -248,10 +290,13 @@ public class LoanController {
      * Get employee's total EMI deduction for current month
      */
     @GetMapping("/employee/{empId}/emi-total")
-    public Map<String, Object> getEmployeeEmiTotal(@RequestParam String orgId,
+    public Map<String, Object> getEmployeeEmiTotal(@RequestParam(required = false) String orgId,
                                                     @PathVariable String empId) {
-        BigDecimal monthlyEmi = loanService.getMonthlyEmiDeduction(orgId, empId);
-        List<Loan> activeLoans = loanService.getActiveLoans(orgId, empId);
+        String tenantId = TenantContext.getTenantId();
+        if (tenantId == null || tenantId.isEmpty()) tenantId = orgId;
+        
+        BigDecimal monthlyEmi = loanService.getMonthlyEmiDeduction(tenantId, empId);
+        List<Loan> activeLoans = loanService.getActiveLoans(tenantId, empId);
         Employee emp = findEmployee(empId).orElse(null);
         
         return Map.of(
@@ -272,9 +317,11 @@ public class LoanController {
      * Get active loans for an employee
      */
     @GetMapping("/employee/{empId}/active")
-    public List<Loan> getActiveLoans(@RequestParam String orgId,
+    public List<Loan> getActiveLoans(@RequestParam(required = false) String orgId,
                                       @PathVariable String empId) {
-        return loanService.getActiveLoans(orgId, empId);
+        String tenantId = TenantContext.getTenantId();
+        if (tenantId == null || tenantId.isEmpty()) tenantId = orgId;
+        return loanService.getActiveLoans(tenantId, empId);
     }
 
     /**
