@@ -25,6 +25,9 @@ import com.example.hrms.repo.HolidayRepository;
 import com.example.hrms.repo.WeeklyOffConfigRepository;
 import com.example.hrms.payroll.domain.SalaryOvertimeConfig;
 import com.example.hrms.payroll.service.SalaryOvertimeConfigService;
+import com.example.hrms.leave.repo.EmployeeLeaveRepository;
+import com.example.hrms.leave.domain.EmployeeLeave;
+import com.example.hrms.leave.domain.enums.LeaveStatus;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -50,6 +53,7 @@ public class AttendanceEngineImpl implements AttendanceEngine {
     private final WeeklyOffConfigRepository weeklyOffConfigRepo;
     private final HolidayRepository holidayRepo;
     private final SalaryOvertimeConfigService configService;
+    private final EmployeeLeaveRepository leaveRepo;
 
     private static final ZoneId ORG_TZ = ZoneId.of("Asia/Kolkata");
     private static final int BOUNDARY_FLOOR_MIN = 120; // at least 2h cross-midnight fetch
@@ -396,6 +400,22 @@ public class AttendanceEngineImpl implements AttendanceEngine {
         int fullDayThresholdMins = config.getFullDayMinHours() * 60;
         int otMinThresholdMins = config.getOvertimeMinThresholdMins();
         
+        // Check if employee is on leave for this date
+        boolean isOnLeave = false;
+        if (tenantId != null) {
+            // Get employee code for leave lookup
+            String empCode = employeeRepo.findById(employeeId)
+                    .map(Employee::getEmpCode)
+                    .orElse(null);
+            if (empCode != null) {
+                // Check for approved leaves that cover this date
+                List<EmployeeLeave> leaves = leaveRepo.findByTenantIdAndEmpIdAndStartDateLessThanEqualAndEndDateGreaterThanEqual(
+                        tenantId, empCode, date, date);
+                isOnLeave = leaves.stream()
+                        .anyMatch(l -> l.getStatus() == LeaveStatus.APPROVED);
+            }
+        }
+        
         // Determine status - if missing punch and has morning IN, treat as PRESENT (pending review)
         String status;
         if (isOvertimeDay) {
@@ -410,7 +430,8 @@ public class AttendanceEngineImpl implements AttendanceEngine {
                 // Don't override dayWorkTotal here, let admin fix it
             }
         } else if (dayWorkTotal == 0) {
-            status = "ABSENT";
+            // No work done - check if on leave or absent
+            status = isOnLeave ? "LEAVE" : "ABSENT";
         } else if (dayWorkTotal < halfDayThresholdMins) {
             status = "HALF_DAY";
         } else {
