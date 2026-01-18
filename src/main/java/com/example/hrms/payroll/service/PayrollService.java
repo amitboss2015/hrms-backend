@@ -782,19 +782,23 @@ public class PayrollService {
         YearMonth ym = YearMonth.of(year, month);
         LocalDate start = ym.atDay(1);
         LocalDate end = ym.atEndOfMonth();
+        
+        // Use TenantContext for proper tenant isolation
+        String tenantId = TenantContext.getTenantId();
+        if (tenantId == null || tenantId.isEmpty()) {
+            tenantId = orgId;
+        }
 
-        // Get employees
+        // Get employees for THIS TENANT ONLY
+        final String effectiveTenantId = tenantId;
         List<Employee> employees = employeeRepo.findAll().stream()
                 .filter(e -> e.getStatus() == com.example.hrms.domain.enums.EmployeeStatus.ACTIVE)
+                .filter(e -> effectiveTenantId.equals(e.getTenantId()))
                 .toList();
 
-        // Check if attendance records exist
-        List<AttendanceDay> attendanceRecords = attendanceDayRepo.findAll().stream()
-                .filter(a -> {
-                    LocalDate workDate = a.getWorkDate();
-                    return workDate != null && !workDate.isBefore(start) && !workDate.isAfter(end);
-                })
-                .toList();
+        // Check if attendance records exist FOR THIS TENANT AND MONTH
+        List<AttendanceDay> attendanceRecords = attendanceDayRepo.findByTenantIdAndWorkDateBetween(
+                effectiveTenantId, start, end);
 
         int employeesWithAttendance = (int) attendanceRecords.stream()
                 .map(AttendanceDay::getEmployeeId)
@@ -812,8 +816,8 @@ public class PayrollService {
         result.put("attendanceRecords", attendanceRecords.size());
         
         if (!isAvailable) {
-            result.put("message", "Attendance not uploaded for " + ym.getMonth() + " " + year + 
-                    ". Please upload attendance before generating payroll.");
+            result.put("message", "No attendance data for " + ym.getMonth() + " " + year + 
+                    ". Please import attendance before generating payroll.");
         }
 
         return result;
