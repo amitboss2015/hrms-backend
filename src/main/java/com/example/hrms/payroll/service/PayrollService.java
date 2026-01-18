@@ -1042,8 +1042,9 @@ public class PayrollService {
 
     /**
      * Update manual advance for an employee
-     * This creates a one-time loan (SALARY_ADVANCE) to track the advance
-     * and adds it to the payroll deduction
+     * Creates a FLEXIBLE LOAN (SALARY_ADVANCE) to track the advance
+     * The advance is deducted from this month's payroll and tracked as a loan entry
+     * This creates an audit trail in the loan system
      */
     public Payroll updateManualAdvance(Long payrollId, BigDecimal manualAdvance, String remarks) {
         Payroll payroll = payrollRepo.findById(payrollId)
@@ -1053,7 +1054,8 @@ public class PayrollService {
             throw new IllegalStateException("Cannot update payroll with status: " + payroll.getStatus());
         }
 
-        // If manual advance > 0, create a one-time loan to track it
+        // If manual advance > 0, create a FLEXIBLE LOAN to track it
+        // This creates an audit trail and tracks the advance in the loan system
         if (manualAdvance != null && manualAdvance.compareTo(BigDecimal.ZERO) > 0) {
             try {
                 com.example.hrms.loan.domain.Loan advanceLoan = new com.example.hrms.loan.domain.Loan();
@@ -1062,37 +1064,44 @@ public class PayrollService {
                 advanceLoan.setLoanType(com.example.hrms.loan.domain.enums.LoanType.SALARY_ADVANCE);
                 advanceLoan.setPrincipalAmount(manualAdvance);
                 advanceLoan.setInterestRate(BigDecimal.ZERO);
-                advanceLoan.setTenureMonths(1);
-                advanceLoan.setEmiAmount(manualAdvance);
+                advanceLoan.setTenureMonths(0); // Flexible - no fixed tenure
+                advanceLoan.setEmiAmount(BigDecimal.ZERO); // No fixed EMI
                 advanceLoan.setSanctionDate(java.time.LocalDate.now());
-                advanceLoan.setFirstEmiDate(java.time.LocalDate.of(payroll.getYear(), payroll.getMonth(), 1));
+                advanceLoan.setFirstEmiDate(null); // No fixed EMI date
                 advanceLoan.setTotalRepayable(manualAdvance);
-                advanceLoan.setOutstandingBalance(manualAdvance);
-                advanceLoan.setTotalPaid(BigDecimal.ZERO);
-                advanceLoan.setEmisPaid(0);
-                advanceLoan.setIsOneTimeDeduction(true);
-                advanceLoan.setRemarks("Advance given for " + payroll.getMonth() + "/" + payroll.getYear() + ": " + remarks);
+                // Since we're deducting now, mark as paid immediately
+                advanceLoan.setOutstandingBalance(BigDecimal.ZERO);
+                advanceLoan.setTotalPaid(manualAdvance);
+                advanceLoan.setEmisPaid(1);
+                advanceLoan.setIsOneTimeDeduction(false);
+                advanceLoan.setIsFlexibleDeduction(true); // Mark as flexible loan
+                advanceLoan.setStatus(com.example.hrms.loan.domain.enums.LoanStatus.CLOSED);
+                advanceLoan.setClosedDate(java.time.LocalDate.now());
+                advanceLoan.setRemarks("Advance given & deducted for " + payroll.getMonth() + "/" + payroll.getYear() + ": " + remarks);
                 
-                // Save the loan (this will also create the EMI schedule)
+                // Save the loan (creates audit trail)
                 loanService.createLoan(advanceLoan);
                 
-                // Refresh the loan deduction amount
-                BigDecimal newLoanEmi = loanService.getMonthlyEmiDeduction(payroll.getTenantId(), payroll.getEmpId());
-                payroll.setLoanDeduction(newLoanEmi);
+                // Add to flexible loan deduction (this will be deducted from salary)
+                BigDecimal currentFlexDeduction = safeAdd(payroll.getFlexibleLoanDeduction());
+                payroll.setFlexibleLoanDeduction(currentFlexDeduction.add(manualAdvance));
             } catch (Exception e) {
-                // If loan creation fails, still add to advance directly
+                // If loan creation fails, still add to flexible deduction directly
                 System.err.println("Failed to create advance loan: " + e.getMessage());
+                BigDecimal currentFlexDeduction = safeAdd(payroll.getFlexibleLoanDeduction());
+                payroll.setFlexibleLoanDeduction(currentFlexDeduction.add(manualAdvance));
             }
         }
 
-        // Calculate new advance = loan EMI (which now includes the new advance) + any residual
-        BigDecimal loanEmi = safeAdd(payroll.getLoanDeduction());
-        payroll.setAdvance(loanEmi);
+        // Calculate new advance = fixed EMI + flexible loan deduction
+        BigDecimal fixedEmi = safeAdd(payroll.getLoanDeduction());
+        BigDecimal flexDeduction = safeAdd(payroll.getFlexibleLoanDeduction());
+        payroll.setAdvance(fixedEmi.add(flexDeduction));
         
         // Update remarks
         String existingRemarks = payroll.getRemarks() != null ? payroll.getRemarks() : "";
         String advanceRemark = manualAdvance != null && manualAdvance.compareTo(BigDecimal.ZERO) > 0 
-                ? "Advance: ₹" + manualAdvance + " given" 
+                ? "Advance: ₹" + manualAdvance + " (tracked in loan system)" 
                 : "";
         if (!advanceRemark.isEmpty()) {
             payroll.setRemarks(existingRemarks.isEmpty() ? advanceRemark : existingRemarks + "; " + advanceRemark);
