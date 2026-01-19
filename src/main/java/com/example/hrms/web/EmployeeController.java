@@ -1,10 +1,12 @@
 package com.example.hrms.web;
 
+import com.example.hrms.attendance.repo.BiometricDeviceRepository;
 import com.example.hrms.domain.Employee;
 import com.example.hrms.dto.EmployeeDTO;
 import com.example.hrms.dto.EmployeeImportResult;
 import com.example.hrms.service.EmployeeService;
 import com.example.hrms.service.excel.EmployeeExcelService;
+import com.example.hrms.tenant.TenantContext;
 import jakarta.validation.Valid;
 import org.springframework.http.*;
 import org.springframework.validation.BindingResult;
@@ -22,10 +24,13 @@ import java.util.*;
 public class EmployeeController {
     private final EmployeeService service;
     private final EmployeeExcelService excelService;
+    private final BiometricDeviceRepository deviceRepo;
     
-    public EmployeeController(EmployeeService service, EmployeeExcelService excelService) { 
+    public EmployeeController(EmployeeService service, EmployeeExcelService excelService, 
+                               BiometricDeviceRepository deviceRepo) { 
         this.service = service; 
         this.excelService = excelService;
+        this.deviceRepo = deviceRepo;
     }
 
     @GetMapping
@@ -58,6 +63,10 @@ public class EmployeeController {
         
         try {
             Employee employee = dto.toEntity();
+            
+            // Handle biometric device assignment
+            assignDeviceFromDto(employee, dto);
+            
             Employee saved = service.upsert(employee);
             return ResponseEntity.created(URI.create("/api/employees/" + saved.getEmpCode())).body(saved);
         } catch (Exception e) {
@@ -65,6 +74,27 @@ public class EmployeeController {
             response.put("success", false);
             response.put("message", e.getMessage());
             return ResponseEntity.badRequest().body(response);
+        }
+    }
+    
+    /**
+     * Helper to assign biometric device from DTO
+     */
+    private void assignDeviceFromDto(Employee employee, EmployeeDTO dto) {
+        String tenantId = TenantContext.getTenantId();
+        
+        // If device ID is provided, use it
+        if (dto.getBiometricDeviceId() != null) {
+            deviceRepo.findById(dto.getBiometricDeviceId())
+                .filter(d -> d.getTenantId().equals(tenantId)) // Security: verify tenant
+                .ifPresent(employee::setBiometricDevice);
+        }
+        
+        // Handle device employee code
+        if (dto.isUseEmpCodeAsDeviceCode()) {
+            employee.setDeviceEmpCode(null); // Will use empCode as fallback
+        } else if (dto.getDeviceEmpCode() != null && !dto.getDeviceEmpCode().isEmpty()) {
+            employee.setDeviceEmpCode(dto.getDeviceEmpCode());
         }
     }
 
@@ -93,6 +123,10 @@ public class EmployeeController {
         try {
             dto.setEmpCode(empCode);
             Employee employee = dto.toEntity();
+            
+            // Handle biometric device assignment
+            assignDeviceFromDto(employee, dto);
+            
             Employee saved = service.upsert(employee);
             return ResponseEntity.ok(saved);
         } catch (Exception e) {

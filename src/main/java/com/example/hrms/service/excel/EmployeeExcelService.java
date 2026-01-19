@@ -1,11 +1,14 @@
 package com.example.hrms.service.excel;
 
+import com.example.hrms.attendance.domain.BiometricDevice;
+import com.example.hrms.attendance.repo.BiometricDeviceRepository;
 import com.example.hrms.domain.Employee;
 import com.example.hrms.domain.enums.*;
 import com.example.hrms.dto.EmployeeDTO;
 import com.example.hrms.dto.EmployeeImportResult;
 import com.example.hrms.repo.EmployeeRepository;
 import com.example.hrms.tenant.TenantContext;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.stereotype.Service;
@@ -20,9 +23,11 @@ import java.util.*;
 import java.util.regex.Pattern;
 
 @Service
+@Slf4j
 public class EmployeeExcelService {
 
     private final EmployeeRepository employeeRepo;
+    private final BiometricDeviceRepository deviceRepo;
 
     // Validation patterns
     private static final Pattern PHONE_PATTERN = Pattern.compile("^[6-9]\\d{9}$");
@@ -38,7 +43,7 @@ public class EmployeeExcelService {
         "Department", "Designation", "Join Date (YYYY-MM-DD)", "Base Salary"
     };
 
-    // Full headers for detailed template
+    // Full headers for detailed template (includes biometric device columns)
     private static final String[] FULL_TEMPLATE_HEADERS = {
         "Emp Code*", "First Name*", "Last Name", "Phone", "Email",
         "Department", "Designation", "Employment Type", "Salary Basis", 
@@ -47,11 +52,13 @@ public class EmployeeExcelService {
         "Aadhaar Number", "PAN Number", "Bank Account Number", "IFSC Code",
         "Bank Name", "Branch Name", "UAN Number", "ESIC Number",
         "Emergency Contact Name", "Emergency Contact Phone",
-        "OT Allowed (Yes/No)", "Weekly Off Days"
+        "OT Allowed (Yes/No)", "Weekly Off Days",
+        "Device Code", "Device Emp Code"
     };
 
-    public EmployeeExcelService(EmployeeRepository employeeRepo) {
+    public EmployeeExcelService(EmployeeRepository employeeRepo, BiometricDeviceRepository deviceRepo) {
         this.employeeRepo = employeeRepo;
+        this.deviceRepo = deviceRepo;
     }
 
     /**
@@ -150,6 +157,10 @@ public class EmployeeExcelService {
             instructionSheet.createRow(rowNum++).createCell(0).setCellValue("8. Status: ACTIVE, INACTIVE, TERMINATED, ON_LEAVE");
             instructionSheet.createRow(rowNum++).createCell(0).setCellValue("9. Weekly Off Days: SUNDAY or SATURDAY,SUNDAY (comma-separated)");
             rowNum++;
+            instructionSheet.createRow(rowNum++).createCell(0).setCellValue("BIOMETRIC DEVICE SETTINGS (Optional):");
+            instructionSheet.createRow(rowNum++).createCell(0).setCellValue("10. Device Code: The code of the biometric device (e.g., DEFAULT, MAIN_GATE). Leave empty for default device.");
+            instructionSheet.createRow(rowNum++).createCell(0).setCellValue("11. Device Emp Code: The employee's code in the biometric device (if different from Emp Code)");
+            rowNum++;
             instructionSheet.createRow(rowNum++).createCell(0).setCellValue("NOTE: Delete the sample row before importing!");
             
             instructionSheet.setColumnWidth(0, 80 * 256);
@@ -236,6 +247,38 @@ public class EmployeeExcelService {
                 // Convert to entity
                 Employee employee = dto.toEntity();
                 employee.setTenantId(tenantId);
+                
+                // Handle biometric device assignment
+                String deviceCode = getStringValue(row, columnIndex, "Device Code");
+                String deviceEmpCode = getStringValue(row, columnIndex, "Device Emp Code");
+                
+                if (deviceCode != null && !deviceCode.trim().isEmpty()) {
+                    // Look up device by code
+                    Optional<BiometricDevice> device = deviceRepo.findByTenantIdAndDeviceCode(tenantId, deviceCode.trim());
+                    if (device.isPresent()) {
+                        employee.setBiometricDevice(device.get());
+                        // Set device emp code if different from emp code
+                        if (deviceEmpCode != null && !deviceEmpCode.trim().isEmpty() 
+                                && !deviceEmpCode.trim().equals(dto.getEmpCode())) {
+                            employee.setDeviceEmpCode(deviceEmpCode.trim());
+                        }
+                    } else {
+                        result.addError(rowNum, dto.getEmpCode(), "Device Code", 
+                            "Device not found: " + deviceCode + ". Please create the device first.");
+                        continue;
+                    }
+                } else {
+                    // Assign default device if exists
+                    deviceRepo.findByTenantIdAndDeviceCode(tenantId, "DEFAULT")
+                        .ifPresent(employee::setBiometricDevice);
+                    
+                    // If deviceEmpCode is provided without deviceCode, still set it
+                    if (deviceEmpCode != null && !deviceEmpCode.trim().isEmpty() 
+                            && !deviceEmpCode.trim().equals(dto.getEmpCode())) {
+                        employee.setDeviceEmpCode(deviceEmpCode.trim());
+                    }
+                }
+                
                 employeesToSave.add(employee);
             }
 

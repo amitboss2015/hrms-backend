@@ -66,4 +66,45 @@ public interface EmployeeRepository extends JpaRepository<Employee, Long> {
            "LOWER(e.lastName) LIKE LOWER(CONCAT('%', :search, '%')) OR " +
            "LOWER(e.empCode) LIKE LOWER(CONCAT('%', :search, '%')))")
     List<Employee> searchByTenantId(@Param("tenantId") String tenantId, @Param("search") String search);
+    
+    // ============ BIOMETRIC DEVICE METHODS ============
+    
+    /**
+     * Find employee by biometric device and device employee code.
+     * This is the primary lookup used during attendance import.
+     */
+    @Query("SELECT e FROM Employee e WHERE e.biometricDevice.id = :deviceId AND " +
+           "(e.deviceEmpCode = :deviceEmpCode OR (e.deviceEmpCode IS NULL AND e.empCode = :deviceEmpCode))")
+    Optional<Employee> findByDeviceIdAndDeviceEmpCode(@Param("deviceId") Long deviceId, @Param("deviceEmpCode") String deviceEmpCode);
+    
+    /**
+     * Find all employees assigned to a specific device
+     */
+    List<Employee> findByBiometricDeviceId(Long deviceId);
+    
+    /**
+     * Find all employees for a tenant that have a device assigned
+     */
+    List<Employee> findByTenantIdAndBiometricDeviceIsNotNull(String tenantId);
+    
+    /**
+     * Find all employees for a tenant without a device assigned
+     */
+    List<Employee> findByTenantIdAndBiometricDeviceIsNull(String tenantId);
+    
+    /**
+     * Count employees by device
+     */
+    long countByBiometricDeviceId(Long deviceId);
+    
+    /**
+     * Check if device emp code already exists for a device (for validation)
+     */
+    @Query("SELECT CASE WHEN COUNT(e) > 0 THEN true ELSE false END FROM Employee e " +
+           "WHERE e.biometricDevice.id = :deviceId AND " +
+           "(e.deviceEmpCode = :deviceEmpCode OR (e.deviceEmpCode IS NULL AND e.empCode = :deviceEmpCode)) " +
+           "AND (:excludeEmpId IS NULL OR e.id != :excludeEmpId)")
+    boolean existsByDeviceIdAndDeviceEmpCode(@Param("deviceId") Long deviceId, 
+                                              @Param("deviceEmpCode") String deviceEmpCode,
+                                              @Param("excludeEmpId") Long excludeEmpId);
 }

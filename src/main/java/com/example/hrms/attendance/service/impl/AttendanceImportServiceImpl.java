@@ -602,26 +602,35 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
     }
     
     /**
-     * Resolve employee ID with optional device mapping support.
+     * Resolve employee ID with optional device support.
+     * 
+     * NEW SIMPLIFIED APPROACH:
+     * - Each employee can have a biometric_device_id and device_emp_code
+     * - If device is specified, look up employee by device and device_emp_code
+     * - device_emp_code can be different from emp_code (for multi-device scenarios)
+     * - If device_emp_code is null, emp_code is used as fallback
      * 
      * Resolution order:
-     * 1. If deviceId is provided, look up in device mappings first
-     * 2. If no mapping found or no deviceId, fall back to direct emp_code lookup
+     * 1. If deviceId is provided, look up by device + device_emp_code (or emp_code fallback)
+     * 2. If no deviceId, use direct emp_code lookup (backward compatible)
      * 
      * This maintains backward compatibility while supporting multi-device scenarios.
      */
     private Long resolveEmployeeId(String empCode, String tenantId, Long deviceId) {
         if (isBlank(empCode)) return null;
         
-        // If device is specified, try mapping first
+        // If device is specified, look up employee by device and device_emp_code
         if (deviceId != null && tenantId != null) {
-            Optional<BiometricDeviceMapping> mapping = mappingRepo.findActiveMapping(tenantId, deviceId, empCode);
-            if (mapping.isPresent()) {
-                return mapping.get().getEmployee().getId();
+            // Use the new repository method that checks both device_emp_code and emp_code fallback
+            Optional<Employee> employee = employeeRepo.findByDeviceIdAndDeviceEmpCode(deviceId, empCode);
+            if (employee.isPresent()) {
+                // Verify tenant for security
+                if (tenantId.equals(employee.get().getTenantId())) {
+                    return employee.get().getId();
+                }
             }
-            // Device specified but no mapping found - don't fall back to direct lookup
-            // This ensures we don't accidentally assign punches to wrong employee
-            log.debug("No device mapping found for device={}, empCode={}", deviceId, empCode);
+            // Device specified but no employee found with this code - don't fall back
+            log.debug("No employee found for device={}, deviceEmpCode={}", deviceId, empCode);
             return null;
         }
         
@@ -796,14 +805,17 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
             );
         }
         
-        // Load device mappings into a lookup map for fast resolution
+        // Load employee-device mappings into a lookup map for fast resolution
+        // Now using employee.biometricDevice and employee.deviceEmpCode instead of separate mapping table
         Map<String, Long> deviceMappings = new HashMap<>();
         if (deviceId != null) {
-            List<BiometricDeviceMapping> mappings = mappingRepo.findByTenantIdAndDeviceIdOrderByDeviceEmpCodeAsc(tenantId, deviceId);
-            for (BiometricDeviceMapping m : mappings) {
-                deviceMappings.put(m.getDeviceEmpCode(), m.getEmployee().getId());
+            List<Employee> employees = employeeRepo.findByBiometricDeviceId(deviceId);
+            for (Employee emp : employees) {
+                // Use deviceEmpCode if set, otherwise use empCode
+                String effectiveDeviceCode = emp.getEffectiveDeviceEmpCode();
+                deviceMappings.put(effectiveDeviceCode, emp.getId());
             }
-            log.info("Loaded {} device mappings for device {}", deviceMappings.size(), device.getDeviceCode());
+            log.info("Loaded {} employee-device mappings for device {}", deviceMappings.size(), device.getDeviceCode());
         }
         
         try (Workbook wb = WorkbookFactory.create(file.getInputStream())) {
@@ -1053,14 +1065,17 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
                     .build();
         }
         
-        // Load device mappings into a lookup map for fast resolution
+        // Load employee-device mappings into a lookup map for fast resolution
+        // Now using employee.biometricDevice and employee.deviceEmpCode instead of separate mapping table
         Map<String, Long> deviceMappings = new HashMap<>();
         if (deviceId != null) {
-            List<BiometricDeviceMapping> mappings = mappingRepo.findByTenantIdAndDeviceIdOrderByDeviceEmpCodeAsc(tenantId, deviceId);
-            for (BiometricDeviceMapping m : mappings) {
-                deviceMappings.put(m.getDeviceEmpCode(), m.getEmployee().getId());
+            List<Employee> employees = employeeRepo.findByBiometricDeviceId(deviceId);
+            for (Employee emp : employees) {
+                // Use deviceEmpCode if set, otherwise use empCode
+                String effectiveDeviceCode = emp.getEffectiveDeviceEmpCode();
+                deviceMappings.put(effectiveDeviceCode, emp.getId());
             }
-            log.info("Loaded {} device mappings for device {}", deviceMappings.size(), device.getDeviceCode());
+            log.info("Loaded {} employee-device mappings for device {}", deviceMappings.size(), device.getDeviceCode());
         }
 
         ImportBatch batch = ImportBatch.builder()

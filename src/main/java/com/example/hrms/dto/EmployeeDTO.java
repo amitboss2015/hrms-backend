@@ -128,6 +128,22 @@ public class EmployeeDTO {
     private String weeklyOffDays;
     private Integer standardWorkingHoursPerDay;
     private Integer workingDaysPerMonth;
+    
+    // Biometric device association
+    private Long biometricDeviceId;
+    private String biometricDeviceName; // For display only (read-only)
+    
+    /**
+     * Employee code in the biometric device.
+     * If left empty, uses empCode as the device code.
+     */
+    @Size(max = 50, message = "Device employee code must be less than 50 characters")
+    private String deviceEmpCode;
+    
+    /**
+     * If true, deviceEmpCode will be set same as empCode
+     */
+    private boolean useEmpCodeAsDeviceCode = true;
 
     // Default constructor
     public EmployeeDTO() {}
@@ -178,6 +194,14 @@ public class EmployeeDTO {
         dto.setWeeklyOffDays(e.getWeeklyOffDays());
         dto.setStandardWorkingHoursPerDay(e.getStandardWorkingHoursPerDay());
         dto.setWorkingDaysPerMonth(e.getWorkingDaysPerMonth());
+        // Biometric device fields
+        if (e.getBiometricDevice() != null) {
+            dto.setBiometricDeviceId(e.getBiometricDevice().getId());
+            dto.setBiometricDeviceName(e.getBiometricDevice().getDeviceName());
+        }
+        dto.setDeviceEmpCode(e.getDeviceEmpCode());
+        // If device code is same as emp code or null, mark useEmpCodeAsDeviceCode as true
+        dto.setUseEmpCodeAsDeviceCode(e.getDeviceEmpCode() == null || e.getDeviceEmpCode().equals(e.getEmpCode()));
         return dto;
     }
 
@@ -365,4 +389,16 @@ public class EmployeeDTO {
     
     public Integer getWorkingDaysPerMonth() { return workingDaysPerMonth; }
     public void setWorkingDaysPerMonth(Integer workingDaysPerMonth) { this.workingDaysPerMonth = workingDaysPerMonth; }
+    
+    public Long getBiometricDeviceId() { return biometricDeviceId; }
+    public void setBiometricDeviceId(Long biometricDeviceId) { this.biometricDeviceId = biometricDeviceId; }
+    
+    public String getBiometricDeviceName() { return biometricDeviceName; }
+    public void setBiometricDeviceName(String biometricDeviceName) { this.biometricDeviceName = biometricDeviceName; }
+    
+    public String getDeviceEmpCode() { return deviceEmpCode; }
+    public void setDeviceEmpCode(String deviceEmpCode) { this.deviceEmpCode = deviceEmpCode; }
+    
+    public boolean isUseEmpCodeAsDeviceCode() { return useEmpCodeAsDeviceCode; }
+    public void setUseEmpCodeAsDeviceCode(boolean useEmpCodeAsDeviceCode) { this.useEmpCodeAsDeviceCode = useEmpCodeAsDeviceCode; }
 }

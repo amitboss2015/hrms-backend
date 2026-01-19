@@ -1,5 +1,6 @@
 package com.example.hrms.domain;
 
+import com.example.hrms.attendance.domain.BiometricDevice;
 import com.example.hrms.domain.enums.*;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.*;
@@ -9,11 +10,14 @@ import java.time.LocalDate;
 @Entity
 @Table(name = "employees", 
     uniqueConstraints = {
-        @UniqueConstraint(name = "uk_tenant_emp_code", columnNames = {"tenant_id", "emp_code"})
+        @UniqueConstraint(name = "uk_tenant_emp_code", columnNames = {"tenant_id", "emp_code"}),
+        // Each device_emp_code must be unique within a device (same code can exist in different devices)
+        @UniqueConstraint(name = "uk_device_emp_code", columnNames = {"biometric_device_id", "device_emp_code"})
     },
     indexes = {
         @Index(name = "idx_emp_tenant", columnList = "tenantId"),
-        @Index(name = "idx_tenant_status", columnList = "tenantId, status")
+        @Index(name = "idx_tenant_status", columnList = "tenantId, status"),
+        @Index(name = "idx_emp_device", columnList = "biometric_device_id")
     }
 )
 public class Employee {
@@ -173,6 +177,19 @@ public class Employee {
     // Working hours
     private Integer standardWorkingHoursPerDay = 8;
     private Integer workingDaysPerMonth = 26;
+    
+    // Biometric device association (one employee = one device)
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "biometric_device_id")
+    private BiometricDevice biometricDevice;
+    
+    /**
+     * Employee code in the biometric device.
+     * This may be different from the HRMS empCode.
+     * If null, defaults to empCode during attendance import.
+     */
+    @Column(name = "device_emp_code", length = 50)
+    private String deviceEmpCode;
 
     public Employee() {}
 
@@ -328,4 +345,18 @@ public class Employee {
 
     public Integer getWorkingDaysPerMonth() { return workingDaysPerMonth; }
     public void setWorkingDaysPerMonth(Integer workingDaysPerMonth) { this.workingDaysPerMonth = workingDaysPerMonth; }
+    
+    public BiometricDevice getBiometricDevice() { return biometricDevice; }
+    public void setBiometricDevice(BiometricDevice biometricDevice) { this.biometricDevice = biometricDevice; }
+    
+    public String getDeviceEmpCode() { return deviceEmpCode; }
+    public void setDeviceEmpCode(String deviceEmpCode) { this.deviceEmpCode = deviceEmpCode != null ? deviceEmpCode.trim() : null; }
+    
+    /**
+     * Get the effective device employee code.
+     * Returns deviceEmpCode if set, otherwise falls back to empCode.
+     */
+    public String getEffectiveDeviceEmpCode() {
+        return deviceEmpCode != null && !deviceEmpCode.isEmpty() ? deviceEmpCode : empCode;
+    }
 }

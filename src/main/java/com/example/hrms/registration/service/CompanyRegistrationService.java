@@ -5,6 +5,8 @@ import com.example.hrms.admin.domain.TrialTracking.TrialStatus;
 import com.example.hrms.admin.repo.TrialTrackingRepository;
 import com.example.hrms.admin.service.FraudDetectionService;
 import com.example.hrms.admin.service.FraudDetectionService.FraudResult;
+import com.example.hrms.attendance.domain.BiometricDevice;
+import com.example.hrms.attendance.repo.BiometricDeviceRepository;
 import com.example.hrms.auth.domain.User;
 import com.example.hrms.auth.domain.enums.UserRole;
 import com.example.hrms.auth.repo.UserRepository;
@@ -52,6 +54,7 @@ public class CompanyRegistrationService {
     private final FraudDetectionService fraudDetectionService;
     private final TrialTrackingRepository trialTrackingRepo;
     private final ShiftRepository shiftRepo;
+    private final BiometricDeviceRepository biometricDeviceRepo;
 
     /**
      * Register a new company (Step 1: Create pending registration)
@@ -254,6 +257,9 @@ public class CompanyRegistrationService {
         // Create default shifts for the new company
         createDefaultShifts(tenantId);
         
+        // Create default biometric device for the company
+        createDefaultBiometricDevice(tenantId, registration.getCompanyName());
+        
         // Send welcome email
         try {
             emailService.sendWelcomeEmail(
@@ -438,6 +444,29 @@ public class CompanyRegistrationService {
         } catch (Exception e) {
             log.error("Failed to create default shifts for tenant: {}", tenantId, e);
             // Don't fail activation if shift creation fails
+        }
+    }
+    
+    /**
+     * Create a default biometric device for the new company.
+     * This simplifies setup - all employees will be assigned to this device by default.
+     */
+    private void createDefaultBiometricDevice(String tenantId, String companyName) {
+        try {
+            BiometricDevice defaultDevice = BiometricDevice.builder()
+                    .tenantId(tenantId)
+                    .deviceCode("DEFAULT")
+                    .deviceName("Main Attendance Device")
+                    .location("Main Office")
+                    .active(true)
+                    .build();
+            
+            biometricDeviceRepo.save(defaultDevice);
+            log.info("✅ Default biometric device created for tenant: {}", tenantId);
+            
+        } catch (Exception e) {
+            log.error("Failed to create default biometric device for tenant: {}", tenantId, e);
+            // Don't fail activation if device creation fails
         }
     }
     

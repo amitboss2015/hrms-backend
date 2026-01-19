@@ -1,11 +1,13 @@
 package com.example.hrms.service;
 
+import com.example.hrms.attendance.repo.BiometricDeviceRepository;
 import com.example.hrms.domain.Employee;
 import com.example.hrms.domain.enums.EmployeeStatus;
 import com.example.hrms.repo.EmployeeRepository;
 import com.example.hrms.service.excel.EmployeeExcelImporter;
 import com.example.hrms.tenant.TenantContext;
 import jakarta.transaction.Transactional;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -13,11 +15,14 @@ import java.util.List;
 import java.util.Optional;
 
 @Service
+@Slf4j
 public class EmployeeService {
     private final EmployeeRepository repo;
+    private final BiometricDeviceRepository deviceRepo;
     
-    public EmployeeService(EmployeeRepository repo) { 
-        this.repo = repo; 
+    public EmployeeService(EmployeeRepository repo, BiometricDeviceRepository deviceRepo) { 
+        this.repo = repo;
+        this.deviceRepo = deviceRepo;
     }
 
     /**
@@ -64,6 +69,11 @@ public class EmployeeService {
         // This prevents cross-tenant data manipulation
         e.setTenantId(tenantId);
         
+        // If no biometric device is set, assign the default device for this tenant
+        if (e.getBiometricDevice() == null) {
+            assignDefaultDevice(e, tenantId);
+        }
+        
         return repo.findByTenantIdAndEmpCode(tenantId, e.getEmpCode()).map(cur -> {
             cur.setFirstName(e.getFirstName()); 
             cur.setLastName(e.getLastName());
@@ -108,8 +118,22 @@ public class EmployeeService {
             cur.setWeeklyOffDays(e.getWeeklyOffDays());
             cur.setStandardWorkingHoursPerDay(e.getStandardWorkingHoursPerDay());
             cur.setWorkingDaysPerMonth(e.getWorkingDaysPerMonth());
+            // Biometric device fields
+            cur.setBiometricDevice(e.getBiometricDevice());
+            cur.setDeviceEmpCode(e.getDeviceEmpCode());
             return repo.save(cur);
         }).orElseGet(() -> repo.save(e));
+    }
+    
+    /**
+     * Assign default biometric device to employee if exists
+     */
+    private void assignDefaultDevice(Employee e, String tenantId) {
+        deviceRepo.findByTenantIdAndDeviceCode(tenantId, "DEFAULT")
+            .ifPresent(device -> {
+                e.setBiometricDevice(device);
+                log.debug("Assigned default device to employee {}", e.getEmpCode());
+            });
     }
 
     /**
