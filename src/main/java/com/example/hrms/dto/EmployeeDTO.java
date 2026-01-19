@@ -244,10 +244,11 @@ public class EmployeeDTO {
         e.setMedicalAllowance(this.medicalAllowance);
         e.setSpecialAllowance(this.specialAllowance);
         e.setOtherAllowance(this.otherAllowance);
-        e.setEpfApplicable(this.epfApplicable);
-        e.setEsicApplicable(this.esicApplicable);
-        e.setPtApplicable(this.ptApplicable);
-        e.setTdsApplicable(this.tdsApplicable);
+        // Default deduction flags to true if not explicitly set
+        e.setEpfApplicable(this.epfApplicable != null ? this.epfApplicable : true);
+        e.setEsicApplicable(this.esicApplicable != null ? this.esicApplicable : true);
+        e.setPtApplicable(this.ptApplicable != null ? this.ptApplicable : true);
+        e.setTdsApplicable(this.tdsApplicable != null ? this.tdsApplicable : false);
         e.setWeeklyOffDays(this.weeklyOffDays);
         e.setStandardWorkingHoursPerDay(this.standardWorkingHoursPerDay);
         e.setWorkingDaysPerMonth(this.workingDaysPerMonth);

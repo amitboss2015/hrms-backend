@@ -341,14 +341,16 @@ public class PayrollService {
                 .add(safeAdd(payroll.getSpecialAllowance()))
                 .add(safeAdd(payroll.getOtherAllowance()));
 
-        // ESI = GROSS SALARY * 0.75% (only if ESI applicable)
-        if (Boolean.TRUE.equals(emp.getEsicApplicable())) {
+        // ESI = GROSS SALARY * 0.75% (default to TRUE if null for backward compatibility)
+        boolean esicApplicable = emp.getEsicApplicable() == null || Boolean.TRUE.equals(emp.getEsicApplicable());
+        if (esicApplicable) {
             BigDecimal esi = grossSalary.multiply(ESI_RATE).setScale(0, RoundingMode.CEILING);
             payroll.setEsiEmployee(esi);
         }
 
-        // PF = FINAL PAYMENT * 6% (based on monthly salary, not prorated)
-        if (Boolean.TRUE.equals(emp.getEpfApplicable())) {
+        // PF = FINAL PAYMENT * 6% (based on monthly salary, default to TRUE if null)
+        boolean epfApplicable = emp.getEpfApplicable() == null || Boolean.TRUE.equals(emp.getEpfApplicable());
+        if (epfApplicable) {
             BigDecimal pfOwn = payroll.getFinalPayment().multiply(PF_RATE).setScale(4, RoundingMode.HALF_UP);
             BigDecimal pfCompany = payroll.getFinalPayment().multiply(PF_RATE).setScale(4, RoundingMode.HALF_UP);
             payroll.setPfEmployee(pfOwn);
