@@ -83,6 +83,12 @@ public interface EmployeeRepository extends JpaRepository<Employee, Long> {
     List<Employee> findByBiometricDeviceId(Long deviceId);
     
     /**
+     * Find employee by biometric device ID and device emp code (for import duplicate check)
+     */
+    @Query("SELECT e FROM Employee e WHERE e.biometricDevice.id = :deviceId AND e.deviceEmpCode = :deviceEmpCode")
+    Optional<Employee> findByBiometricDeviceIdAndDeviceEmpCode(@Param("deviceId") Long deviceId, @Param("deviceEmpCode") String deviceEmpCode);
+    
+    /**
      * Find all employees for a tenant that have a device assigned
      */
     List<Employee> findByTenantIdAndBiometricDeviceIsNotNull(String tenantId);

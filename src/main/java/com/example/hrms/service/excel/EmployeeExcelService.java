@@ -261,8 +261,11 @@ public class EmployeeExcelService {
                     continue; // Errors already added to result
                 }
 
+                // If importing with a specific device, allow updates to existing employees
+                boolean allowUpdate = (finalDevice != null);
+                
                 // Validate DTO
-                List<String> validationErrors = validateEmployee(dto, tenantId, processedEmpCodes, rowNum);
+                List<String> validationErrors = validateEmployee(dto, tenantId, processedEmpCodes, rowNum, finalDevice, allowUpdate);
                 
                 if (!validationErrors.isEmpty()) {
                     for (String error : validationErrors) {
@@ -271,25 +274,20 @@ public class EmployeeExcelService {
                     continue;
                 }
 
-                processedEmpCodes.add(dto.getEmpCode().toUpperCase());
-                
-                // Convert to entity
-                Employee employee = dto.toEntity();
-                employee.setTenantId(tenantId);
-                
-                // Handle biometric device assignment
+                // Handle biometric device assignment first to determine unique emp_code
                 // Priority: 1) Device from parameter, 2) Device Code column, 3) Default device
                 String deviceCodeFromExcel = getStringValue(row, columnIndex, "Device Code");
-                String deviceEmpCode = getStringValue(row, columnIndex, "Device Emp Code");
+                String deviceEmpCodeFromExcel = getStringValue(row, columnIndex, "Device Emp Code");
+                BiometricDevice targetDevice = null;
                 
                 if (finalDevice != null) {
                     // Use device passed as parameter (from encoded filename)
-                    employee.setBiometricDevice(finalDevice);
+                    targetDevice = finalDevice;
                 } else if (deviceCodeFromExcel != null && !deviceCodeFromExcel.trim().isEmpty()) {
                     // Look up device by code from Excel column
                     Optional<BiometricDevice> deviceFromCode = deviceRepo.findByTenantIdAndDeviceCode(tenantId, deviceCodeFromExcel.trim());
                     if (deviceFromCode.isPresent()) {
-                        employee.setBiometricDevice(deviceFromCode.get());
+                        targetDevice = deviceFromCode.get();
                     } else {
                         result.addError(rowNum, dto.getEmpCode(), "Device Code", 
                             "Device not found: " + deviceCodeFromExcel + ". Please create the device first.");
@@ -297,15 +295,59 @@ public class EmployeeExcelService {
                     }
                 } else {
                     // Try to assign default device
-                    deviceRepo.findByTenantIdAndDeviceCode(tenantId, "DEFAULT")
-                        .ifPresent(employee::setBiometricDevice);
+                    targetDevice = deviceRepo.findByTenantIdAndDeviceCode(tenantId, "DEFAULT").orElse(null);
                 }
                 
-                // Set device emp code if different from emp code
-                if (deviceEmpCode != null && !deviceEmpCode.trim().isEmpty() 
-                        && !deviceEmpCode.trim().equals(dto.getEmpCode())) {
-                    employee.setDeviceEmpCode(deviceEmpCode.trim());
+                // When importing from a specific device (not DEFAULT), we need to:
+                // 1. Use the Excel emp_code as the device_emp_code
+                // 2. Generate a unique HRMS emp_code by prefixing with device code
+                String originalEmpCode = dto.getEmpCode();
+                String hrmsEmpCode = originalEmpCode;
+                String deviceEmpCode = deviceEmpCodeFromExcel != null && !deviceEmpCodeFromExcel.trim().isEmpty() 
+                        ? deviceEmpCodeFromExcel.trim() 
+                        : originalEmpCode;
+                
+                // If importing from a non-default device, prefix emp_code to make it unique
+                if (targetDevice != null && !"DEFAULT".equals(targetDevice.getDeviceCode())) {
+                    // Check if this device_emp_code already exists in this device
+                    Optional<Employee> existingByDevice = employeeRepo.findByBiometricDeviceIdAndDeviceEmpCode(
+                            targetDevice.getId(), deviceEmpCode);
+                    
+                    if (existingByDevice.isPresent()) {
+                        // Already imported - skip as duplicate in this device
+                        result.setSkippedCount(result.getSkippedCount() + 1);
+                        result.addError(rowNum, originalEmpCode, "", 
+                            "Already imported in device " + targetDevice.getDeviceCode() + " - skipping");
+                        continue;
+                    }
+                    
+                    // Generate unique HRMS emp_code: DEVICECODE_ORIGINALCODE
+                    hrmsEmpCode = targetDevice.getDeviceCode() + "_" + originalEmpCode;
+                    
+                    // Check if this generated code already exists
+                    if (employeeRepo.existsByTenantIdAndEmpCode(tenantId, hrmsEmpCode)) {
+                        // This shouldn't happen normally, but handle it
+                        result.setSkippedCount(result.getSkippedCount() + 1);
+                        result.addError(rowNum, originalEmpCode, "", 
+                            "Generated code " + hrmsEmpCode + " already exists - skipping");
+                        continue;
+                    }
+                } else {
+                    // Default device - use original logic
+                    if (employeeRepo.existsByTenantIdAndEmpCode(tenantId, hrmsEmpCode)) {
+                        result.addError(rowNum, originalEmpCode, "", "Emp Code already exists: " + hrmsEmpCode);
+                        continue;
+                    }
                 }
+                
+                processedEmpCodes.add(hrmsEmpCode.toUpperCase());
+                
+                // Create new employee entity
+                Employee employee = dto.toEntity();
+                employee.setTenantId(tenantId);
+                employee.setEmpCode(hrmsEmpCode);  // Use the HRMS-unique code
+                employee.setBiometricDevice(targetDevice);
+                employee.setDeviceEmpCode(deviceEmpCode);  // Store the original device code
                 
                 employeesToSave.add(employee);
             }
@@ -542,7 +584,8 @@ public class EmployeeExcelService {
         }
     }
 
-    private List<String> validateEmployee(EmployeeDTO dto, String tenantId, Set<String> processedEmpCodes, int rowNum) {
+    private List<String> validateEmployee(EmployeeDTO dto, String tenantId, Set<String> processedEmpCodes, int rowNum, 
+                                          BiometricDevice device, boolean allowUpdate) {
         List<String> errors = new ArrayList<>();
 
         // Emp code validation
@@ -555,8 +598,10 @@ public class EmployeeExcelService {
             errors.add("Duplicate Emp Code in file: " + dto.getEmpCode());
         }
 
-        // Check if emp code already exists in database for this tenant
-        if (employeeRepo.existsByTenantIdAndEmpCode(tenantId, dto.getEmpCode())) {
+        // Check if emp code already exists in database
+        // If importing for a specific device, we allow updates to existing employees
+        // If no device specified, treat as new employee import (legacy behavior)
+        if (!allowUpdate && employeeRepo.existsByTenantIdAndEmpCode(tenantId, dto.getEmpCode())) {
             errors.add("Emp Code already exists: " + dto.getEmpCode());
         }
 
