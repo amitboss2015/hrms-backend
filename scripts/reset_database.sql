@@ -25,6 +25,10 @@ TRUNCATE TABLE import_error;
 TRUNCATE TABLE login_audit;
 TRUNCATE TABLE refresh_tokens;
 
+-- Delete biometric device data
+TRUNCATE TABLE biometric_device_mapping;
+TRUNCATE TABLE biometric_devices;
+
 -- Delete master data
 TRUNCATE TABLE employees;
 TRUNCATE TABLE shifts;

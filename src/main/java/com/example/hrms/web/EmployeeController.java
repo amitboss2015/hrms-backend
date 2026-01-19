@@ -174,9 +174,13 @@ public class EmployeeController {
 
     /**
      * Import employees from Excel file with validation
+     * @param file The Excel file to import
+     * @param deviceId Optional biometric device ID to associate employees with
      */
     @PostMapping("/import")
-    public ResponseEntity<EmployeeImportResult> importEmployees(@RequestParam("file") MultipartFile file) {
+    public ResponseEntity<EmployeeImportResult> importEmployees(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "deviceId", required = false) Long deviceId) {
         // Validate file
         if (file.isEmpty()) {
             EmployeeImportResult result = new EmployeeImportResult();
@@ -194,7 +198,7 @@ public class EmployeeController {
         }
 
         try {
-            EmployeeImportResult result = excelService.importFromExcel(file);
+            EmployeeImportResult result = excelService.importFromExcel(file, deviceId);
             
             if (result.isSuccess()) {
                 return ResponseEntity.ok(result);

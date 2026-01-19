@@ -171,10 +171,20 @@ public class EmployeeExcelService {
     }
 
     /**
-     * Import employees from Excel file with validation
+     * Import employees from Excel file with validation (backward compatible)
      */
     @Transactional
     public EmployeeImportResult importFromExcel(MultipartFile file) throws IOException {
+        return importFromExcel(file, null);
+    }
+    
+    /**
+     * Import employees from Excel file with validation and device assignment
+     * @param file The Excel file to import
+     * @param deviceId Optional biometric device ID to assign to all imported employees
+     */
+    @Transactional
+    public EmployeeImportResult importFromExcel(MultipartFile file, Long deviceId) throws IOException {
         EmployeeImportResult result = new EmployeeImportResult();
         
         String tenantId = TenantContext.getTenantId();
@@ -183,6 +193,25 @@ public class EmployeeExcelService {
             result.setMessage("Tenant context not set. Please ensure you are logged in.");
             return result;
         }
+        
+        // Get the device if specified
+        BiometricDevice device = null;
+        if (deviceId != null) {
+            Optional<BiometricDevice> deviceOpt = deviceRepo.findById(deviceId);
+            if (deviceOpt.isPresent() && deviceOpt.get().getTenantId().equals(tenantId)) {
+                device = deviceOpt.get();
+                log.info("Import will assign employees to device: {} ({})", device.getDeviceName(), device.getDeviceCode());
+            } else {
+                log.warn("Device {} not found or belongs to different tenant, will use default device", deviceId);
+            }
+        }
+        
+        // If no device specified, try to use default device
+        if (device == null) {
+            device = deviceRepo.findByTenantIdAndDeviceCode(tenantId, "DEFAULT").orElse(null);
+        }
+        
+        final BiometricDevice finalDevice = device;
 
         try (InputStream inputStream = file.getInputStream();
              Workbook workbook = new XSSFWorkbook(inputStream)) {
@@ -249,34 +278,33 @@ public class EmployeeExcelService {
                 employee.setTenantId(tenantId);
                 
                 // Handle biometric device assignment
-                String deviceCode = getStringValue(row, columnIndex, "Device Code");
+                // Priority: 1) Device from parameter, 2) Device Code column, 3) Default device
+                String deviceCodeFromExcel = getStringValue(row, columnIndex, "Device Code");
                 String deviceEmpCode = getStringValue(row, columnIndex, "Device Emp Code");
                 
-                if (deviceCode != null && !deviceCode.trim().isEmpty()) {
-                    // Look up device by code
-                    Optional<BiometricDevice> device = deviceRepo.findByTenantIdAndDeviceCode(tenantId, deviceCode.trim());
-                    if (device.isPresent()) {
-                        employee.setBiometricDevice(device.get());
-                        // Set device emp code if different from emp code
-                        if (deviceEmpCode != null && !deviceEmpCode.trim().isEmpty() 
-                                && !deviceEmpCode.trim().equals(dto.getEmpCode())) {
-                            employee.setDeviceEmpCode(deviceEmpCode.trim());
-                        }
+                if (finalDevice != null) {
+                    // Use device passed as parameter (from encoded filename)
+                    employee.setBiometricDevice(finalDevice);
+                } else if (deviceCodeFromExcel != null && !deviceCodeFromExcel.trim().isEmpty()) {
+                    // Look up device by code from Excel column
+                    Optional<BiometricDevice> deviceFromCode = deviceRepo.findByTenantIdAndDeviceCode(tenantId, deviceCodeFromExcel.trim());
+                    if (deviceFromCode.isPresent()) {
+                        employee.setBiometricDevice(deviceFromCode.get());
                     } else {
                         result.addError(rowNum, dto.getEmpCode(), "Device Code", 
-                            "Device not found: " + deviceCode + ". Please create the device first.");
+                            "Device not found: " + deviceCodeFromExcel + ". Please create the device first.");
                         continue;
                     }
                 } else {
-                    // Assign default device if exists
+                    // Try to assign default device
                     deviceRepo.findByTenantIdAndDeviceCode(tenantId, "DEFAULT")
                         .ifPresent(employee::setBiometricDevice);
-                    
-                    // If deviceEmpCode is provided without deviceCode, still set it
-                    if (deviceEmpCode != null && !deviceEmpCode.trim().isEmpty() 
-                            && !deviceEmpCode.trim().equals(dto.getEmpCode())) {
-                        employee.setDeviceEmpCode(deviceEmpCode.trim());
-                    }
+                }
+                
+                // Set device emp code if different from emp code
+                if (deviceEmpCode != null && !deviceEmpCode.trim().isEmpty() 
+                        && !deviceEmpCode.trim().equals(dto.getEmpCode())) {
+                    employee.setDeviceEmpCode(deviceEmpCode.trim());
                 }
                 
                 employeesToSave.add(employee);
