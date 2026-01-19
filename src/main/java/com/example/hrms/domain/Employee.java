@@ -2,6 +2,7 @@ package com.example.hrms.domain;
 
 import com.example.hrms.attendance.domain.BiometricDevice;
 import com.example.hrms.domain.enums.*;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.*;
 import java.math.BigDecimal;
@@ -181,6 +182,7 @@ public class Employee {
     // Biometric device association (one employee = one device)
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "biometric_device_id")
+    @JsonIgnore  // Prevent lazy loading serialization issues
     private BiometricDevice biometricDevice;
     
     /**
