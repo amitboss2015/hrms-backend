@@ -61,8 +61,8 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
         
         YearMonth ymFromParams = YearMonth.of(year, month);
         
-        // Check for duplicate upload
-        List<ImportBatch> existingBatches = batchRepo.findByOrgIdAndMonthAndYear(orgId, month, year);
+        // Check for duplicate upload - for legacy (no device) batches only
+        List<ImportBatch> existingBatches = batchRepo.findByOrgIdAndMonthAndYearAndDeviceIdIsNull(orgId, month, year);
         if (!existingBatches.isEmpty()) {
             ImportBatch existing = existingBatches.get(0);
             return AttendanceImportPreview.duplicate(
@@ -280,8 +280,8 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
         YearMonth ymFromParams = YearMonth.of(year, month);
         log.info("Import attendance for org={}, tenant={}, month={}, year={}", orgId, tenantId, month, year);
 
-        // Check for duplicate upload for same org, month, year
-        List<ImportBatch> existingBatches = batchRepo.findByOrgIdAndMonthAndYear(orgId, month, year);
+        // Check for duplicate upload - for legacy (no device) batches only
+        List<ImportBatch> existingBatches = batchRepo.findByOrgIdAndMonthAndYearAndDeviceIdIsNull(orgId, month, year);
         if (!existingBatches.isEmpty()) {
             return ImportResultDTO.builder()
                     .batchId(String.valueOf(existingBatches.get(0).getId()))
@@ -300,6 +300,8 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
                 .uploadedAt(Instant.now())
                 .month(month)
                 .year(year)
+                .deviceId(null)  // Legacy import - no device
+                .deviceCode(null)
                 .templateVersion("biometric-logs-v3")
                 .totalRows(0).successRows(0).errorRows(0)
                 .build();
@@ -802,15 +804,29 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
         
         YearMonth ymFromParams = YearMonth.of(year, month);
         
-        // Check for duplicate upload
-        List<ImportBatch> existingBatches = batchRepo.findByOrgIdAndMonthAndYear(orgId, month, year);
-        if (!existingBatches.isEmpty()) {
-            ImportBatch existing = existingBatches.get(0);
-            return AttendanceImportPreview.duplicate(
-                existing.getId(), 
-                existing.getUploadedAt().toString(),
-                month, year
-            );
+        // Check for duplicate upload - now DEVICE-AWARE
+        // Only block if there's already an upload for this SPECIFIC device + month/year combo
+        if (deviceId != null) {
+            Optional<ImportBatch> existingForDevice = batchRepo.findByOrgIdAndMonthAndYearAndDeviceId(orgId, month, year, deviceId);
+            if (existingForDevice.isPresent()) {
+                ImportBatch existing = existingForDevice.get();
+                return AttendanceImportPreview.duplicate(
+                    existing.getId(), 
+                    existing.getUploadedAt().toString(),
+                    month, year
+                );
+            }
+        } else {
+            // No device specified - check for legacy batches without device
+            List<ImportBatch> existingBatches = batchRepo.findByOrgIdAndMonthAndYearAndDeviceIdIsNull(orgId, month, year);
+            if (!existingBatches.isEmpty()) {
+                ImportBatch existing = existingBatches.get(0);
+                return AttendanceImportPreview.duplicate(
+                    existing.getId(), 
+                    existing.getUploadedAt().toString(),
+                    month, year
+                );
+            }
         }
         
         // Load employee-device mappings into a lookup map for fast resolution
@@ -1049,18 +1065,37 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
             }
         }
 
-        // Check for duplicate upload for same org, month, year
-        List<ImportBatch> existingBatches = batchRepo.findByOrgIdAndMonthAndYear(orgId, month, year);
-        if (!existingBatches.isEmpty()) {
-            return ImportResultDTO.builder()
-                    .batchId(String.valueOf(existingBatches.get(0).getId()))
-                    .total(0).success(0).failed(0)
-                    .errorsCsvUrl(null)
-                    .message("Attendance for " + ymFromParams.getMonth() + " " + year + " has already been uploaded. " +
-                            "Batch ID: " + existingBatches.get(0).getId() + ". Delete the existing batch first to re-upload.")
-                    .duplicate(true)
-                    .existingBatchId(existingBatches.get(0).getId())
-                    .build();
+        // Check for duplicate upload - DEVICE-AWARE
+        // Only block if there's already an upload for this SPECIFIC device + month/year combo
+        if (deviceId != null) {
+            Optional<ImportBatch> existingForDevice = batchRepo.findByOrgIdAndMonthAndYearAndDeviceId(orgId, month, year, deviceId);
+            if (existingForDevice.isPresent()) {
+                ImportBatch existing = existingForDevice.get();
+                return ImportResultDTO.builder()
+                        .batchId(String.valueOf(existing.getId()))
+                        .total(0).success(0).failed(0)
+                        .errorsCsvUrl(null)
+                        .message("Attendance for " + device.getDeviceCode() + " device, " + ymFromParams.getMonth() + " " + year + 
+                                " has already been uploaded. Batch ID: " + existing.getId() + ". Delete the existing batch first to re-upload.")
+                        .duplicate(true)
+                        .existingBatchId(existing.getId())
+                        .build();
+            }
+        } else {
+            // No device specified - check for legacy batches without device
+            List<ImportBatch> existingBatches = batchRepo.findByOrgIdAndMonthAndYearAndDeviceIdIsNull(orgId, month, year);
+            if (!existingBatches.isEmpty()) {
+                ImportBatch existing = existingBatches.get(0);
+                return ImportResultDTO.builder()
+                        .batchId(String.valueOf(existing.getId()))
+                        .total(0).success(0).failed(0)
+                        .errorsCsvUrl(null)
+                        .message("Attendance for " + ymFromParams.getMonth() + " " + year + " has already been uploaded. " +
+                                "Batch ID: " + existing.getId() + ". Delete the existing batch first to re-upload.")
+                        .duplicate(true)
+                        .existingBatchId(existing.getId())
+                        .build();
+            }
         }
         
         // Load employee-device mappings into a lookup map for fast resolution
@@ -1082,6 +1117,8 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
                 .uploadedAt(Instant.now())
                 .month(month)
                 .year(year)
+                .deviceId(deviceId)
+                .deviceCode(device != null ? device.getDeviceCode() : null)
                 .templateVersion("biometric-logs-v3-device")
                 .totalRows(0).successRows(0).errorRows(0)
                 .build();
