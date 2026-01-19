@@ -219,11 +219,13 @@ public class EmployeeController {
     }
 
     /**
-     * Legacy import endpoint - redirects to new endpoint
+     * Legacy import endpoint - redirects to new endpoint with null deviceId
      */
     @PostMapping("/import-excel")
-    public ResponseEntity<EmployeeImportResult> importExcelLegacy(@RequestParam("file") MultipartFile file) {
-        return importEmployees(file);
+    public ResponseEntity<EmployeeImportResult> importExcelLegacy(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "deviceId", required = false) Long deviceId) {
+        return importEmployees(file, deviceId);
     }
 
     /**
