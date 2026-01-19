@@ -189,6 +189,82 @@ public class SalaryOvertimeConfig {
     @Builder.Default
     private Integer fullDayMinHours = 7;
 
+    // ==================== STATUTORY DEDUCTION RATES ====================
+
+    /**
+     * ESI (Employee State Insurance) employee contribution rate.
+     * Standard rate is 0.75% of gross salary.
+     * Default: 0.75%
+     */
+    @Column(nullable = false, precision = 6, scale = 4)
+    @Builder.Default
+    private BigDecimal esiEmployeeRate = new BigDecimal("0.0075");
+
+    /**
+     * ESI employer contribution rate.
+     * Standard rate is 3.25% of gross salary.
+     * Default: 3.25%
+     */
+    @Column(nullable = false, precision = 6, scale = 4)
+    @Builder.Default
+    private BigDecimal esiEmployerRate = new BigDecimal("0.0325");
+
+    /**
+     * ESI wage ceiling - employees with gross > this are exempt.
+     * As of 2024, the limit is ₹21,000/month.
+     * Default: 21000
+     */
+    @Column(nullable = false)
+    @Builder.Default
+    private BigDecimal esiWageCeiling = new BigDecimal("21000");
+
+    /**
+     * EPF (Employee Provident Fund) employee contribution rate.
+     * Standard rate is 12% of basic + DA (or 6% of gross in some cases).
+     * Default: 6% (as per payment sheet)
+     */
+    @Column(nullable = false, precision = 6, scale = 4)
+    @Builder.Default
+    private BigDecimal pfEmployeeRate = new BigDecimal("0.06");
+
+    /**
+     * EPF employer contribution rate.
+     * Standard rate is 12% (3.67% to EPF + 8.33% to EPS).
+     * Default: 6% (as per payment sheet)
+     */
+    @Column(nullable = false, precision = 6, scale = 4)
+    @Builder.Default
+    private BigDecimal pfEmployerRate = new BigDecimal("0.06");
+
+    /**
+     * PF wage ceiling - basic salary cap for PF calculation.
+     * As of 2024, the statutory limit is ₹15,000/month for employer contribution.
+     * Default: 15000
+     */
+    @Column(nullable = false)
+    @Builder.Default
+    private BigDecimal pfWageCeiling = new BigDecimal("15000");
+
+    /**
+     * Whether PF is calculated on basic salary or full payment.
+     * BASIC - Calculate on basic salary only
+     * FULL_PAYMENT - Calculate on basic + increment (FINAL PAYMENT)
+     * Default: FULL_PAYMENT (as per payment sheet)
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    @Builder.Default
+    private PfCalculationBase pfCalculationBase = PfCalculationBase.FULL_PAYMENT;
+
+    /**
+     * Professional Tax (PT) monthly amount.
+     * Varies by state. 0 means not applicable.
+     * Default: 0
+     */
+    @Column(nullable = false)
+    @Builder.Default
+    private BigDecimal professionalTaxAmount = BigDecimal.ZERO;
+
     // ==================== METADATA ====================
 
     @Column(nullable = false)
@@ -219,5 +295,13 @@ public class SalaryOvertimeConfig {
     public enum OvertimeCalculationType {
         HOURLY,  // Calculate OT based on hours worked
         DAILY    // Calculate OT based on days worked
+    }
+
+    /**
+     * PF calculation base enum.
+     */
+    public enum PfCalculationBase {
+        BASIC,        // Calculate PF on basic salary only
+        FULL_PAYMENT  // Calculate PF on basic + increment (FINAL PAYMENT)
     }
 }

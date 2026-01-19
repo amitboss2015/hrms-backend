@@ -49,9 +49,9 @@ public class PayrollService {
     private final LoanService loanService;
     private final SalaryOvertimeConfigService configService;
 
-    // Standard deduction rates matching payment sheet
-    private static final BigDecimal ESI_RATE = new BigDecimal("0.0075");  // 0.75%
-    private static final BigDecimal PF_RATE = new BigDecimal("0.06");     // 6%
+    // Default deduction rates (fallback if config not set) - these are now org-configurable
+    private static final BigDecimal DEFAULT_ESI_RATE = new BigDecimal("0.0075");  // 0.75%
+    private static final BigDecimal DEFAULT_PF_RATE = new BigDecimal("0.06");     // 6%
 
     public PayrollService(PayrollRepository payrollRepo,
                           EmployeeRepository employeeRepo,
@@ -328,9 +328,26 @@ public class PayrollService {
     }
 
     /**
-     * Calculate deductions based on payment sheet formula
+     * Calculate deductions based on organization-wide configuration
+     * ESI, PF rates are from SalaryOvertimeConfig (org-level)
+     * Applicability flags are from Employee (employee-level)
      */
     private void calculateDeductions(Payroll payroll, Employee emp) {
+        // Get organization config for statutory rates
+        SalaryOvertimeConfig config = configService.getConfig();
+        
+        // Get rates from org config (with fallback to defaults)
+        BigDecimal esiEmployeeRate = config.getEsiEmployeeRate() != null 
+                ? config.getEsiEmployeeRate() : DEFAULT_ESI_RATE;
+        BigDecimal esiEmployerRate = config.getEsiEmployerRate() != null 
+                ? config.getEsiEmployerRate() : new BigDecimal("0.0325");
+        BigDecimal pfEmployeeRate = config.getPfEmployeeRate() != null 
+                ? config.getPfEmployeeRate() : DEFAULT_PF_RATE;
+        BigDecimal pfEmployerRate = config.getPfEmployerRate() != null 
+                ? config.getPfEmployerRate() : DEFAULT_PF_RATE;
+        BigDecimal esiWageCeiling = config.getEsiWageCeiling() != null 
+                ? config.getEsiWageCeiling() : new BigDecimal("21000");
+        
         // First calculate gross to determine ESI
         BigDecimal grossSalary = safeAdd(payroll.getWorkingDayAmount())
                 .add(safeAdd(payroll.getOvertimeDayAmount()))
@@ -341,18 +358,23 @@ public class PayrollService {
                 .add(safeAdd(payroll.getSpecialAllowance()))
                 .add(safeAdd(payroll.getOtherAllowance()));
 
-        // ESI = GROSS SALARY * 0.75% (default to TRUE if null for backward compatibility)
+        // ESI = GROSS SALARY * esi_employee_rate (org-configurable)
+        // Only applies if gross <= ESI wage ceiling AND employee is ESI applicable
         boolean esicApplicable = emp.getEsicApplicable() == null || Boolean.TRUE.equals(emp.getEsicApplicable());
-        if (esicApplicable) {
-            BigDecimal esi = grossSalary.multiply(ESI_RATE).setScale(0, RoundingMode.CEILING);
-            payroll.setEsiEmployee(esi);
+        boolean withinEsiCeiling = grossSalary.compareTo(esiWageCeiling) <= 0;
+        if (esicApplicable && withinEsiCeiling) {
+            BigDecimal esiEmployee = grossSalary.multiply(esiEmployeeRate).setScale(0, RoundingMode.CEILING);
+            BigDecimal esiEmployer = grossSalary.multiply(esiEmployerRate).setScale(0, RoundingMode.CEILING);
+            payroll.setEsiEmployee(esiEmployee);
+            // Store employer contribution if needed for reports
         }
 
-        // PF = FINAL PAYMENT * 6% (based on monthly salary, default to TRUE if null)
+        // PF = FINAL PAYMENT * pf_employee_rate (org-configurable)
+        // Based on monthly salary (FINAL PAYMENT), not prorated
         boolean epfApplicable = emp.getEpfApplicable() == null || Boolean.TRUE.equals(emp.getEpfApplicable());
         if (epfApplicable) {
-            BigDecimal pfOwn = payroll.getFinalPayment().multiply(PF_RATE).setScale(4, RoundingMode.HALF_UP);
-            BigDecimal pfCompany = payroll.getFinalPayment().multiply(PF_RATE).setScale(4, RoundingMode.HALF_UP);
+            BigDecimal pfOwn = payroll.getFinalPayment().multiply(pfEmployeeRate).setScale(4, RoundingMode.HALF_UP);
+            BigDecimal pfCompany = payroll.getFinalPayment().multiply(pfEmployerRate).setScale(4, RoundingMode.HALF_UP);
             payroll.setPfEmployee(pfOwn);
             payroll.setPfCompany(pfCompany);
         }
