@@ -158,10 +158,11 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
                 }
                 
                 String empCode = normalizeEmpCode(empCodeRaw);
-                // Use tenant-aware lookup if tenantId provided, otherwise fallback to global lookup
-                Optional<Employee> matchedEmployee = tenantId != null 
-                    ? employeeRepo.findByTenantIdAndEmpCode(tenantId, empCode)
-                    : employeeRepo.findByEmpCode(empCode);
+                // Use resolveEmployeeId for consistent lookup logic (supports device and fallback)
+                Long matchedEmployeeId = resolveEmployeeId(empCode, tenantId);
+                Optional<Employee> matchedEmployee = matchedEmployeeId != null 
+                    ? employeeRepo.findById(matchedEmployeeId)
+                    : Optional.empty();
                 
                 // Count punches for this employee
                 int empPunchCount = 0;
@@ -604,33 +605,40 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
     /**
      * Resolve employee ID with optional device support.
      * 
-     * NEW SIMPLIFIED APPROACH:
-     * - Each employee can have a biometric_device_id and device_emp_code
-     * - If device is specified, look up employee by device and device_emp_code
-     * - device_emp_code can be different from emp_code (for multi-device scenarios)
-     * - If device_emp_code is null, emp_code is used as fallback
-     * 
-     * Resolution order:
-     * 1. If deviceId is provided, look up by device + device_emp_code (or emp_code fallback)
+     * RESOLUTION ORDER (for backward compatibility with existing employees):
+     * 1. If deviceId is provided:
+     *    a. First try device-specific lookup (device_emp_code or emp_code on that device)
+     *    b. If not found, FALLBACK to tenant-wide emp_code lookup (for employees without device assigned)
      * 2. If no deviceId, use direct emp_code lookup (backward compatible)
      * 
-     * This maintains backward compatibility while supporting multi-device scenarios.
+     * This ensures employees imported before the device feature still work correctly.
      */
     private Long resolveEmployeeId(String empCode, String tenantId, Long deviceId) {
         if (isBlank(empCode)) return null;
         
-        // If device is specified, look up employee by device and device_emp_code
+        // If device is specified, try device-specific lookup first
         if (deviceId != null && tenantId != null) {
-            // Use the new repository method that checks both device_emp_code and emp_code fallback
+            // Step 1: Try device-specific lookup
             Optional<Employee> employee = employeeRepo.findByDeviceIdAndDeviceEmpCode(deviceId, empCode);
             if (employee.isPresent()) {
                 // Verify tenant for security
                 if (tenantId.equals(employee.get().getTenantId())) {
+                    log.debug("Found employee by device: deviceId={}, code={}, empId={}", 
+                            deviceId, empCode, employee.get().getId());
                     return employee.get().getId();
                 }
             }
-            // Device specified but no employee found with this code - don't fall back
-            log.debug("No employee found for device={}, deviceEmpCode={}", deviceId, empCode);
+            
+            // Step 2: FALLBACK to tenant-wide emp_code lookup (for backward compatibility)
+            // This handles employees who were imported before the device feature was added
+            Optional<Employee> fallbackEmployee = employeeRepo.findByTenantIdAndEmpCode(tenantId, empCode);
+            if (fallbackEmployee.isPresent()) {
+                log.debug("Found employee by fallback emp_code lookup: tenant={}, code={}, empId={}", 
+                        tenantId, empCode, fallbackEmployee.get().getId());
+                return fallbackEmployee.get().getId();
+            }
+            
+            log.debug("No employee found for device={}, code={} (tried device lookup and fallback)", deviceId, empCode);
             return null;
         }
         
@@ -905,22 +913,12 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
                 
                 String empCode = normalizeEmpCode(empCodeRaw);
                 
-                // Resolve employee - use device mapping if available, else direct lookup
-                Long employeeId = null;
+                // Resolve employee using unified lookup (supports device + fallback to emp_code)
+                Long employeeId = resolveEmployeeId(empCode, tenantId, deviceId);
                 Employee matchedEmp = null;
                 
-                if (deviceId != null && !deviceMappings.isEmpty()) {
-                    // Use device mapping
-                    employeeId = deviceMappings.get(empCode);
-                    if (employeeId != null) {
-                        matchedEmp = employeeRepo.findById(employeeId).orElse(null);
-                    }
-                } else {
-                    // Direct lookup (backward compatible)
-                    Optional<Employee> empOpt = tenantId != null 
-                        ? employeeRepo.findByTenantIdAndEmpCode(tenantId, empCode)
-                        : employeeRepo.findByEmpCode(empCode);
-                    matchedEmp = empOpt.orElse(null);
+                if (employeeId != null) {
+                    matchedEmp = employeeRepo.findById(employeeId).orElse(null);
                 }
                 
                 // Count punches for this employee
