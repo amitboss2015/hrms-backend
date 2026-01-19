@@ -151,11 +151,17 @@ public class CompanyManagementService {
         deletedCounts.put("payroll", deleteByTenantId("payroll", tenantId));
         deletedCounts.put("salary_overtime_config", deleteByTenantId("salary_overtime_config", tenantId));
 
-        // 6. Employee assignments
+        // 6. Biometric device mappings (must be before employees and devices)
+        deletedCounts.put("biometric_device_mappings", deleteByTenantId("biometric_device_mappings", tenantId));
+        
+        // 7. Employee assignments
         deletedCounts.put("employee_shift_assignments", deleteByTenantId("employee_shift_assignments", tenantId));
 
-        // 7. Employees
+        // 8. Employees
         deletedCounts.put("employees", deleteByTenantId("employees", tenantId));
+        
+        // 9. Biometric devices (after employees since employees reference devices)
+        deletedCounts.put("biometric_devices", deleteByTenantId("biometric_devices", tenantId));
 
         // 8. Shifts and holidays
         deletedCounts.put("shifts", deleteByTenantId("shifts", tenantId));

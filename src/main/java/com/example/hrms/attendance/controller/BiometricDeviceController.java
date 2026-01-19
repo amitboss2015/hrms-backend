@@ -560,4 +560,53 @@ public class BiometricDeviceController {
             ));
         }
     }
+    
+    // ==================== CLEANUP ====================
+    
+    /**
+     * Remove duplicate DEFAULT devices for the current tenant.
+     * Keeps only the first one (by ID) and deletes the rest.
+     * This fixes issues where multiple activations created duplicate devices.
+     */
+    @DeleteMapping("/cleanup/duplicates")
+    @Transactional
+    public ResponseEntity<Map<String, Object>> cleanupDuplicateDevices() {
+        String tenantId = TenantContext.getTenantId();
+        
+        List<BiometricDevice> allDevices = deviceRepo.findByTenantIdOrderByDeviceCodeAsc(tenantId);
+        
+        // Group by deviceCode to find duplicates
+        Map<String, List<BiometricDevice>> byCode = allDevices.stream()
+                .collect(Collectors.groupingBy(BiometricDevice::getDeviceCode));
+        
+        int duplicatesRemoved = 0;
+        List<String> removedDetails = new ArrayList<>();
+        
+        for (Map.Entry<String, List<BiometricDevice>> entry : byCode.entrySet()) {
+            List<BiometricDevice> devices = entry.getValue();
+            if (devices.size() > 1) {
+                // Sort by ID (keep the oldest/first one)
+                devices.sort((a, b) -> a.getId().compareTo(b.getId()));
+                
+                // Keep the first, delete the rest
+                for (int i = 1; i < devices.size(); i++) {
+                    BiometricDevice dup = devices.get(i);
+                    removedDetails.add(String.format("ID=%d, Code=%s, Name=%s", 
+                            dup.getId(), dup.getDeviceCode(), dup.getDeviceName()));
+                    deviceRepo.delete(dup);
+                    duplicatesRemoved++;
+                }
+            }
+        }
+        
+        log.info("🧹 Cleaned up {} duplicate devices for tenant: {}", duplicatesRemoved, tenantId);
+        
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("tenantId", tenantId);
+        result.put("duplicatesRemoved", duplicatesRemoved);
+        result.put("removedDetails", removedDetails);
+        result.put("remainingDevices", deviceRepo.findByTenantIdOrderByDeviceCodeAsc(tenantId).size());
+        
+        return ResponseEntity.ok(result);
+    }
 }
