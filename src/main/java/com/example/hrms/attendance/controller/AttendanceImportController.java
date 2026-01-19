@@ -47,19 +47,31 @@ public class AttendanceImportController {
     /**
      * Preview attendance import before confirming.
      * Parses the file and returns summary of what will be imported.
+     * 
+     * @param deviceId Optional device ID for multi-device support. If provided, uses device mappings for employee resolution.
      */
     @PostMapping("/import/preview")
     public ResponseEntity<AttendanceImportPreview> previewImport(
             @RequestParam("file") MultipartFile file,
             @RequestParam("month") int month,
-            @RequestParam("year") int year) {
+            @RequestParam("year") int year,
+            @RequestParam(value = "deviceId", required = false) Long deviceId) {
         
         String tenantId = TenantContext.getTenantId();
-        log.info("Preview import request: tenant={}, month={}, year={}, file={}", tenantId, month, year, file.getOriginalFilename());
+        log.info("Preview import request: tenant={}, device={}, month={}, year={}, file={}", 
+            tenantId, deviceId, month, year, file.getOriginalFilename());
         
         // Use tenant ID hash as org ID for multi-tenancy
         Long orgId = getOrgIdFromTenant(tenantId);
-        AttendanceImportPreview preview = importService.previewImport(orgId, tenantId, file, month, year);
+        
+        AttendanceImportPreview preview;
+        if (deviceId != null) {
+            // Use device-aware preview
+            preview = importService.previewImportWithDevice(orgId, tenantId, deviceId, file, month, year);
+        } else {
+            // Use standard preview (backward compatible)
+            preview = importService.previewImport(orgId, tenantId, file, month, year);
+        }
         
         return ResponseEntity.ok(preview);
     }
@@ -67,20 +79,32 @@ public class AttendanceImportController {
     /**
      * Import attendance from biometric Excel file.
      * The file should have a "Logs" sheet (Sheet 2) with day-wise punch times.
+     * 
+     * @param deviceId Optional device ID for multi-device support. If not provided, uses direct emp_code matching.
      */
     @PostMapping("/import")
     public ResponseEntity<ImportResultDTO> importFile(
             @RequestParam("file") MultipartFile file,
             @RequestParam("month") int month,
             @RequestParam("year") int year,
+            @RequestParam(value = "deviceId", required = false) Long deviceId,
             @RequestHeader(value = "X-User", required = false) String uploadedBy) {
 
         String tenantId = TenantContext.getTenantId();
         // Use tenant ID hash as org ID for multi-tenancy
         Long orgId = getOrgIdFromTenant(tenantId);
-        log.info("Import request: tenant={}, orgId={}, month={}, year={}", tenantId, orgId, month, year);
+        log.info("Import request: tenant={}, orgId={}, device={}, month={}, year={}", tenantId, orgId, deviceId, month, year);
         
-        var result = importService.importLogsExcel(orgId, tenantId, file, month, year, uploadedBy == null ? "admin" : uploadedBy);
+        ImportResultDTO result;
+        if (deviceId != null) {
+            // Use device-aware import
+            result = importService.importLogsExcelWithDevice(orgId, tenantId, deviceId, file, month, year, 
+                uploadedBy == null ? "admin" : uploadedBy);
+        } else {
+            // Use standard import (backward compatible)
+            result = importService.importLogsExcel(orgId, tenantId, file, month, year, 
+                uploadedBy == null ? "admin" : uploadedBy);
+        }
 
         // If not a duplicate, rebuild the org month
         if (!result.isDuplicate()) {

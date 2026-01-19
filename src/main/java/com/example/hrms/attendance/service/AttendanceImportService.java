@@ -32,6 +32,16 @@ public interface AttendanceImportService {
     ImportResultDTO importLogsExcel(Long orgId, String tenantId, MultipartFile file, int month, int year, String uploadedBy);
     
     /**
+     * Preview import with specific device (for multi-device support).
+     */
+    AttendanceImportPreview previewImportWithDevice(Long orgId, String tenantId, Long deviceId, MultipartFile file, int month, int year);
+    
+    /**
+     * Import attendance with specific device (for multi-device support).
+     */
+    ImportResultDTO importLogsExcelWithDevice(Long orgId, String tenantId, Long deviceId, MultipartFile file, int month, int year, String uploadedBy);
+    
+    /**
      * Get employee by ID
      */
     Employee getEmployeeById(Long employeeId);

@@ -20,6 +20,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -32,6 +33,8 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
     private final com.example.hrms.repo.EmployeeRepository employeeRepo;
     private final AttendanceEngine attendanceEngine;
     private final EmployeeLeaveRepository leaveRepo;
+    private final BiometricDeviceRepository deviceRepo;
+    private final BiometricDeviceMappingRepository mappingRepo;
 
     private static final ZoneId DEFAULT_TZ = ZoneId.of("Asia/Kolkata");
     
@@ -595,8 +598,34 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
     }
 
     private Long resolveEmployeeId(String empCode, String tenantId) {
+        return resolveEmployeeId(empCode, tenantId, null);
+    }
+    
+    /**
+     * Resolve employee ID with optional device mapping support.
+     * 
+     * Resolution order:
+     * 1. If deviceId is provided, look up in device mappings first
+     * 2. If no mapping found or no deviceId, fall back to direct emp_code lookup
+     * 
+     * This maintains backward compatibility while supporting multi-device scenarios.
+     */
+    private Long resolveEmployeeId(String empCode, String tenantId, Long deviceId) {
         if (isBlank(empCode)) return null;
-        // Use tenant-aware lookup if tenantId provided, otherwise fallback to global lookup
+        
+        // If device is specified, try mapping first
+        if (deviceId != null && tenantId != null) {
+            Optional<BiometricDeviceMapping> mapping = mappingRepo.findActiveMapping(tenantId, deviceId, empCode);
+            if (mapping.isPresent()) {
+                return mapping.get().getEmployee().getId();
+            }
+            // Device specified but no mapping found - don't fall back to direct lookup
+            // This ensures we don't accidentally assign punches to wrong employee
+            log.debug("No device mapping found for device={}, empCode={}", deviceId, empCode);
+            return null;
+        }
+        
+        // No device specified - use direct emp_code lookup (backward compatible)
         Optional<Employee> employee = tenantId != null 
             ? employeeRepo.findByTenantIdAndEmpCode(tenantId, empCode)
             : employeeRepo.findByEmpCode(empCode);
@@ -729,5 +758,555 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
         return allLeaves.stream()
             .filter(l -> l.getStatus() == LeaveStatus.APPROVED)
             .toList();
+    }
+    
+    // ==================== DEVICE-AWARE IMPORT METHODS ====================
+    
+    /**
+     * Preview import with specific device (for multi-device support).
+     * Uses device mappings to resolve employee codes.
+     */
+    @Override
+    public AttendanceImportPreview previewImportWithDevice(Long orgId, String tenantId, Long deviceId, 
+            MultipartFile file, int month, int year) {
+        log.info("Preview import with device: org={}, tenant={}, device={}, month={}, year={}", 
+            orgId, tenantId, deviceId, month, year);
+        
+        // Validate device exists and belongs to tenant
+        BiometricDevice device = null;
+        if (deviceId != null) {
+            device = deviceRepo.findById(deviceId)
+                .filter(d -> d.getTenantId().equals(tenantId))
+                .orElse(null);
+            if (device == null) {
+                return AttendanceImportPreview.error("Device not found or does not belong to this tenant");
+            }
+        }
+        
+        YearMonth ymFromParams = YearMonth.of(year, month);
+        
+        // Check for duplicate upload
+        List<ImportBatch> existingBatches = batchRepo.findByOrgIdAndMonthAndYear(orgId, month, year);
+        if (!existingBatches.isEmpty()) {
+            ImportBatch existing = existingBatches.get(0);
+            return AttendanceImportPreview.duplicate(
+                existing.getId(), 
+                existing.getUploadedAt().toString(),
+                month, year
+            );
+        }
+        
+        // Load device mappings into a lookup map for fast resolution
+        Map<String, Long> deviceMappings = new HashMap<>();
+        if (deviceId != null) {
+            List<BiometricDeviceMapping> mappings = mappingRepo.findByTenantIdAndDeviceIdOrderByDeviceEmpCodeAsc(tenantId, deviceId);
+            for (BiometricDeviceMapping m : mappings) {
+                deviceMappings.put(m.getDeviceEmpCode(), m.getEmployee().getId());
+            }
+            log.info("Loaded {} device mappings for device {}", deviceMappings.size(), device.getDeviceCode());
+        }
+        
+        try (Workbook wb = WorkbookFactory.create(file.getInputStream())) {
+            Sheet sh = findLogsSheet(wb);
+            DataFormatter fmt = new DataFormatter();
+            
+            // Parse period from first few rows
+            YearMonth ymUsed = ymFromParams;
+            for (int r = 0; r <= 3; r++) {
+                Row row = sh.getRow(r);
+                if (row == null) continue;
+                for (int c = 0; c <= 5; c++) {
+                    String cell = readCell(row, c, fmt);
+                    if (cell.contains("~") || cell.contains("–")) {
+                        YearMonth ym = parseYearMonthFromPeriod(cell);
+                        if (ym != null) {
+                            ymUsed = ym;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            int daysInMonth = ymUsed.lengthOfMonth();
+            List<AttendanceImportPreview.EmployeeMatch> employeeMatches = new ArrayList<>();
+            List<AttendanceImportPreview.SampleRow> sampleRows = new ArrayList<>();
+            Map<Integer, Integer> punchesPerDay = new HashMap<>();
+            int totalPunchRecords = 0;
+            Set<Integer> daysWithDataSet = new HashSet<>();
+            
+            // Find first employee block
+            int rowIdx = 0;
+            while (rowIdx < sh.getLastRowNum()) {
+                Row row = sh.getRow(rowIdx);
+                if (row != null) {
+                    String firstCell = readCell(row, 0, fmt).toLowerCase();
+                    if (firstCell.startsWith("no") && firstCell.contains(":")) {
+                        break;
+                    }
+                }
+                rowIdx++;
+            }
+            
+            // Parse employee blocks
+            int sampleCount = 0;
+            while (rowIdx < sh.getLastRowNum()) {
+                Row metaRow = sh.getRow(rowIdx);
+                Row punchRow = sh.getRow(rowIdx + 1);
+                
+                if (metaRow == null) {
+                    rowIdx++;
+                    continue;
+                }
+                
+                String firstCell = readCell(metaRow, 0, fmt);
+                if (!firstCell.toLowerCase().startsWith("no")) {
+                    rowIdx++;
+                    continue;
+                }
+                
+                // Extract employee code
+                String empCodeRaw = readCell(metaRow, 2, fmt);
+                
+                // Find employee name
+                String empName = "";
+                for (int c = 8; c <= 12; c++) {
+                    String cell = readCell(metaRow, c, fmt);
+                    if (cell.toLowerCase().contains("name")) {
+                        for (int nc = c + 1; nc <= c + 3; nc++) {
+                            String nameVal = readCell(metaRow, nc, fmt);
+                            if (!isBlank(nameVal) && !nameVal.toLowerCase().contains(":")) {
+                                empName = nameVal;
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                }
+                if (isBlank(empName)) {
+                    empName = readCell(metaRow, 10, fmt);
+                }
+                
+                if (isBlank(empCodeRaw)) {
+                    rowIdx += 2;
+                    continue;
+                }
+                
+                String empCode = normalizeEmpCode(empCodeRaw);
+                
+                // Resolve employee - use device mapping if available, else direct lookup
+                Long employeeId = null;
+                Employee matchedEmp = null;
+                
+                if (deviceId != null && !deviceMappings.isEmpty()) {
+                    // Use device mapping
+                    employeeId = deviceMappings.get(empCode);
+                    if (employeeId != null) {
+                        matchedEmp = employeeRepo.findById(employeeId).orElse(null);
+                    }
+                } else {
+                    // Direct lookup (backward compatible)
+                    Optional<Employee> empOpt = tenantId != null 
+                        ? employeeRepo.findByTenantIdAndEmpCode(tenantId, empCode)
+                        : employeeRepo.findByEmpCode(empCode);
+                    matchedEmp = empOpt.orElse(null);
+                }
+                
+                // Count punches for this employee
+                int empPunchCount = 0;
+                List<AttendanceImportPreview.DayPunches> dayPunchesList = new ArrayList<>();
+                
+                if (punchRow != null) {
+                    for (int dayCol = 0; dayCol < daysInMonth; dayCol++) {
+                        String cellVal = readCell(punchRow, dayCol, fmt);
+                        if (isBlank(cellVal)) continue;
+                        
+                        String[] times = cellVal.split("\\r?\\n");
+                        List<String> validTimes = new ArrayList<>();
+                        
+                        for (String rawTime : times) {
+                            if (rawTime == null) continue;
+                            rawTime = rawTime.trim();
+                            if (rawTime.isEmpty()) continue;
+                            
+                            LocalTime lt = parseTimeSafe(rawTime);
+                            if (lt != null) {
+                                validTimes.add(rawTime);
+                                empPunchCount++;
+                                totalPunchRecords++;
+                                daysWithDataSet.add(dayCol + 1);
+                                punchesPerDay.merge(dayCol + 1, 1, Integer::sum);
+                            }
+                        }
+                        
+                        // For sample rows, collect first 7 days
+                        if (sampleCount < 5 && dayCol < 7 && !validTimes.isEmpty()) {
+                            String status = validTimes.size() >= 2 ? "PRESENT" : "ONLY_IN";
+                            dayPunchesList.add(AttendanceImportPreview.DayPunches.builder()
+                                    .dayOfMonth(dayCol + 1)
+                                    .punches(validTimes)
+                                    .status(status)
+                                    .build());
+                        }
+                    }
+                }
+                
+                // Add employee match
+                AttendanceImportPreview.EmployeeMatch match = AttendanceImportPreview.EmployeeMatch.builder()
+                        .empCodeInFile(empCodeRaw)
+                        .nameInFile(empName)
+                        .matched(matchedEmp != null)
+                        .matchedEmployeeId(matchedEmp != null ? matchedEmp.getId() : null)
+                        .matchedEmpCode(matchedEmp != null ? matchedEmp.getEmpCode() : null)
+                        .matchedName(matchedEmp != null ? matchedEmp.getFirstName() + " " + 
+                            (matchedEmp.getLastName() != null ? matchedEmp.getLastName() : "") : null)
+                        .punchCount(empPunchCount)
+                        .build();
+                employeeMatches.add(match);
+                
+                // Add sample row (first 5 employees only)
+                if (sampleCount < 5 && !dayPunchesList.isEmpty()) {
+                    sampleRows.add(AttendanceImportPreview.SampleRow.builder()
+                            .empCode(empCode)
+                            .name(empName)
+                            .days(dayPunchesList)
+                            .build());
+                    sampleCount++;
+                }
+                
+                rowIdx += 2;
+            }
+            
+            // Calculate summary
+            int matchedCount = (int) employeeMatches.stream().filter(AttendanceImportPreview.EmployeeMatch::isMatched).count();
+            int unmatchedCount = employeeMatches.size() - matchedCount;
+            
+            String periodStr = ymUsed.getMonth().toString() + " " + ymUsed.getYear();
+            
+            log.info("Preview complete: {} employees ({} matched, {} unmatched), {} punch records",
+                    employeeMatches.size(), matchedCount, unmatchedCount, totalPunchRecords);
+            
+            return AttendanceImportPreview.builder()
+                    .valid(true)
+                    .message("File parsed successfully. Ready to import.")
+                    .fileName(file.getOriginalFilename())
+                    .detectedFormat("BIOMETRIC_LOGS")
+                    .detectedPeriod(periodStr)
+                    .detectedMonth(ymUsed.getMonthValue())
+                    .detectedYear(ymUsed.getYear())
+                    .totalEmployeesInFile(employeeMatches.size())
+                    .matchedEmployees(matchedCount)
+                    .unmatchedEmployees(unmatchedCount)
+                    .employeeMatches(employeeMatches)
+                    .totalPunchRecords(totalPunchRecords)
+                    .daysWithData(daysWithDataSet.size())
+                    .punchesPerDay(punchesPerDay)
+                    .sampleRows(sampleRows)
+                    .duplicateExists(false)
+                    .build();
+                    
+        } catch (Exception e) {
+            log.error("Error previewing file: {}", e.getMessage(), e);
+            return AttendanceImportPreview.error("Failed to parse file: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Import attendance with specific device (for multi-device support).
+     * Uses device mappings to resolve employee codes.
+     */
+    @Override
+    @Transactional
+    public ImportResultDTO importLogsExcelWithDevice(Long orgId, String tenantId, Long deviceId, 
+            MultipartFile file, int month, int year, String uploadedBy) {
+        log.info("Import with device: org={}, tenant={}, device={}, month={}, year={}", 
+            orgId, tenantId, deviceId, month, year);
+        
+        YearMonth ymFromParams = YearMonth.of(year, month);
+        
+        // Validate device exists and belongs to tenant
+        BiometricDevice device = null;
+        if (deviceId != null) {
+            device = deviceRepo.findById(deviceId)
+                .filter(d -> d.getTenantId().equals(tenantId))
+                .orElse(null);
+            if (device == null) {
+                return ImportResultDTO.builder()
+                    .batchId(null)
+                    .total(0).success(0).failed(0)
+                    .message("Device not found or does not belong to this tenant")
+                    .duplicate(false)
+                    .build();
+            }
+        }
+
+        // Check for duplicate upload for same org, month, year
+        List<ImportBatch> existingBatches = batchRepo.findByOrgIdAndMonthAndYear(orgId, month, year);
+        if (!existingBatches.isEmpty()) {
+            return ImportResultDTO.builder()
+                    .batchId(String.valueOf(existingBatches.get(0).getId()))
+                    .total(0).success(0).failed(0)
+                    .errorsCsvUrl(null)
+                    .message("Attendance for " + ymFromParams.getMonth() + " " + year + " has already been uploaded. " +
+                            "Batch ID: " + existingBatches.get(0).getId() + ". Delete the existing batch first to re-upload.")
+                    .duplicate(true)
+                    .existingBatchId(existingBatches.get(0).getId())
+                    .build();
+        }
+        
+        // Load device mappings into a lookup map for fast resolution
+        Map<String, Long> deviceMappings = new HashMap<>();
+        if (deviceId != null) {
+            List<BiometricDeviceMapping> mappings = mappingRepo.findByTenantIdAndDeviceIdOrderByDeviceEmpCodeAsc(tenantId, deviceId);
+            for (BiometricDeviceMapping m : mappings) {
+                deviceMappings.put(m.getDeviceEmpCode(), m.getEmployee().getId());
+            }
+            log.info("Loaded {} device mappings for device {}", deviceMappings.size(), device.getDeviceCode());
+        }
+
+        ImportBatch batch = ImportBatch.builder()
+                .orgId(orgId)
+                .uploadedBy(uploadedBy)
+                .uploadedAt(Instant.now())
+                .month(month)
+                .year(year)
+                .templateVersion("biometric-logs-v3-device")
+                .totalRows(0).successRows(0).errorRows(0)
+                .build();
+        batch = batchRepo.save(batch);
+
+        int total = 0, success = 0, failed = 0;
+        Set<Long> affectedEmployeeIds = new HashSet<>();
+        YearMonth ymUsed = ymFromParams;
+        
+        // Batch collection for performance
+        List<AttendancePunch> punchBatch = new ArrayList<>();
+        List<ImportError> errorBatch = new ArrayList<>();
+
+        try (Workbook wb = WorkbookFactory.create(file.getInputStream())) {
+            Sheet sh = findLogsSheet(wb);
+            DataFormatter fmt = new DataFormatter();
+
+            // Parse period
+            for (int r = 0; r <= 3; r++) {
+                Row row = sh.getRow(r);
+                if (row == null) continue;
+                for (int c = 0; c <= 5; c++) {
+                    String cell = readCell(row, c, fmt);
+                    if (cell.contains("~") || cell.contains("–")) {
+                        YearMonth ym = parseYearMonthFromPeriod(cell);
+                        if (ym != null) {
+                            ymUsed = ym;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            int daysInMonth = ymUsed.lengthOfMonth();
+
+            // Find first employee block
+            int rowIdx = 0;
+            while (rowIdx < sh.getLastRowNum()) {
+                Row row = sh.getRow(rowIdx);
+                if (row != null) {
+                    String firstCell = readCell(row, 0, fmt).toLowerCase();
+                    if (firstCell.startsWith("no") && firstCell.contains(":")) {
+                        break;
+                    }
+                }
+                rowIdx++;
+            }
+
+            // Parse employee blocks
+            while (rowIdx < sh.getLastRowNum()) {
+                Row metaRow = sh.getRow(rowIdx);
+                Row punchRow = sh.getRow(rowIdx + 1);
+
+                if (metaRow == null) {
+                    rowIdx++;
+                    continue;
+                }
+
+                String firstCell = readCell(metaRow, 0, fmt);
+                if (!firstCell.toLowerCase().startsWith("no")) {
+                    rowIdx++;
+                    continue;
+                }
+
+                String empCodeRaw = readCell(metaRow, 2, fmt);
+                
+                String empName = "";
+                for (int c = 8; c <= 12; c++) {
+                    String cell = readCell(metaRow, c, fmt);
+                    if (cell.toLowerCase().contains("name")) {
+                        for (int nc = c + 1; nc <= c + 3; nc++) {
+                            String nameVal = readCell(metaRow, nc, fmt);
+                            if (!isBlank(nameVal) && !nameVal.toLowerCase().contains(":")) {
+                                empName = nameVal;
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                }
+                if (isBlank(empName)) {
+                    empName = readCell(metaRow, 10, fmt);
+                }
+
+                if (isBlank(empCodeRaw)) {
+                    rowIdx += 2;
+                    continue;
+                }
+
+                String empCode = normalizeEmpCode(empCodeRaw);
+                
+                // Resolve employee - use device mapping if available
+                Long employeeId = null;
+                if (deviceId != null && !deviceMappings.isEmpty()) {
+                    employeeId = deviceMappings.get(empCode);
+                } else {
+                    employeeId = resolveEmployeeId(empCode, tenantId);
+                }
+
+                if (employeeId == null) {
+                    failed++;
+                    String errorMsg = deviceId != null 
+                        ? "No device mapping found for code '" + empCodeRaw + "' on device " + device.getDeviceCode()
+                        : "No employee found for code '" + empCodeRaw + "'";
+                    errorBatch.add(ImportError.builder()
+                            .batchId(batch.getId())
+                            .rowNum(rowIdx + 1)
+                            .columnName("C")
+                            .errorCode("EMP_NOT_FOUND")
+                            .errorMessage(errorMsg + " (name: " + empName + ")")
+                            .rawPayloadJson("{\"code\":\"" + escapeJson(empCodeRaw) + "\",\"name\":\"" + escapeJson(empName) + "\"}")
+                            .build());
+                    rowIdx += 2;
+                    continue;
+                }
+
+                affectedEmployeeIds.add(employeeId);
+
+                // Parse punch times
+                if (punchRow != null) {
+                    for (int dayCol = 0; dayCol < daysInMonth; dayCol++) {
+                        String cellVal = readCell(punchRow, dayCol, fmt);
+                        if (isBlank(cellVal)) continue;
+
+                        String[] times = cellVal.split("\\r?\\n");
+                        List<PunchInfo> dayPunches = new ArrayList<>();
+
+                        for (int punchIdx = 0; punchIdx < times.length; punchIdx++) {
+                            String rawTime = times[punchIdx];
+                            if (rawTime == null) continue;
+                            rawTime = rawTime.trim();
+                            if (rawTime.isEmpty()) continue;
+
+                            total++;
+                            try {
+                                LocalTime lt = parseTime(rawTime);
+                                LocalDate punchDate = ymUsed.atDay(dayCol + 1);
+                                
+                                boolean isCrossMidnightOut = false;
+                                if (lt.getHour() < CROSS_MIDNIGHT_THRESHOLD_HOUR) {
+                                    if (punchIdx == 0 && (times.length == 1 || 
+                                        (times.length > 1 && !isBlank(times[1]) && parseTimeSafe(times[1].trim()) != null 
+                                         && parseTimeSafe(times[1].trim()).getHour() >= CROSS_MIDNIGHT_THRESHOLD_HOUR))) {
+                                        isCrossMidnightOut = true;
+                                    }
+                                }
+
+                                String punchType;
+                                if (isCrossMidnightOut) {
+                                    punchType = "OUT";
+                                } else {
+                                    int effectivePunchNum = dayPunches.size() + 1;
+                                    punchType = (effectivePunchNum % 2 == 1) ? "IN" : "OUT";
+                                }
+
+                                Instant utc = ZonedDateTime.of(punchDate, lt, DEFAULT_TZ).toInstant();
+
+                                AttendancePunch p = AttendancePunch.builder()
+                                        .orgId(orgId)
+                                        .employeeId(employeeId)
+                                        .punchTsUtc(utc)
+                                        .timezone(DEFAULT_TZ.getId())
+                                        .source("BIOMETRIC_IMPORT")
+                                        .punchTypeHint(punchType)
+                                        .prevDayCheckout(isCrossMidnightOut)
+                                        .deviceId(deviceId != null ? device.getDeviceCode() : null)
+                                        .shiftHint(determineShiftHint(lt, isCrossMidnightOut))
+                                        .importBatchId(batch.getId())
+                                        .build();
+
+                                punchBatch.add(p);
+                                dayPunches.add(new PunchInfo(lt, punchType, isCrossMidnightOut));
+                                success++;
+                            } catch (Exception ex) {
+                                failed++;
+                                errorBatch.add(ImportError.builder()
+                                        .batchId(batch.getId())
+                                        .rowNum(rowIdx + 2)
+                                        .columnName(colLetter(dayCol))
+                                        .errorCode("TIME_PARSE")
+                                        .errorMessage("Invalid time '" + rawTime + "' for day " + (dayCol + 1) + ": " + ex.getMessage())
+                                        .rawPayloadJson("{\"value\":\"" + escapeJson(rawTime) + "\"}")
+                                        .build());
+                            }
+                        }
+                    }
+                }
+
+                rowIdx += 2;
+            }
+
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to parse Excel: " + e.getMessage(), e);
+        }
+        
+        // Batch save
+        if (!punchBatch.isEmpty()) {
+            log.info("💾 Batch saving {} punch records...", punchBatch.size());
+            punchRepo.saveAll(punchBatch);
+            log.info("✅ Punch records saved successfully");
+        }
+        
+        if (!errorBatch.isEmpty()) {
+            errorRepo.saveAll(errorBatch);
+        }
+        
+        // Update batch stats
+        batch.setTotalRows(total);
+        batch.setSuccessRows(success);
+        batch.setErrorRows(failed);
+        batchRepo.save(batch);
+
+        // Rebuild attendance
+        log.info("🔄 Rebuilding attendance for {} employees...", affectedEmployeeIds.size());
+        long rebuildStart = System.currentTimeMillis();
+        attendanceEngine.rebuildEmployeesMonthBatch(orgId, tenantId, new ArrayList<>(affectedEmployeeIds), ymUsed);
+        long rebuildTime = System.currentTimeMillis() - rebuildStart;
+        log.info("✅ Attendance rebuild complete in {}ms", rebuildTime);
+
+        String message;
+        if (failed == 0 && success > 0) {
+            message = "Attendance uploaded successfully. Processed " + success + " punch records for " + 
+                affectedEmployeeIds.size() + " employees.";
+            if (deviceId != null) {
+                message += " (Device: " + device.getDeviceCode() + ")";
+            }
+        } else if (success == 0) {
+            message = "No records imported. Please check the file format or ensure employees are mapped to the device.";
+        } else {
+            message = "Imported with some errors. Success: " + success + ", Failed: " + failed;
+        }
+
+        return ImportResultDTO.builder()
+                .batchId(String.valueOf(batch.getId()))
+                .total(total).success(success).failed(failed)
+                .errorsCsvUrl(failed > 0 ? "/attendance/import/batches/" + batch.getId() + "/errors.csv" : null)
+                .message(message)
+                .duplicate(false)
+                .build();
     }
 }
