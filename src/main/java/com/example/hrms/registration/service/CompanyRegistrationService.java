@@ -458,7 +458,8 @@ public class CompanyRegistrationService {
                     .deviceCode("DEFAULT")
                     .deviceName("Main Attendance Device")
                     .location("Main Office")
-                    .active(true)
+                    .isActive(true)
+                    .isDefault(true)
                     .build();
             
             biometricDeviceRepo.save(defaultDevice);
