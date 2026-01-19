@@ -181,18 +181,19 @@ public class ReportService {
             row.put("pfEmployee", p.getPfEmployee());
             row.put("pfCompany", p.getPfCompany());
             
-            // Loan EMI breakdown
-            row.put("loanEmi", p.getLoanDeduction());
-            row.put("activeLoansCount", empLoans.size());
-            
-            // Breakdown: Loan EMI vs Manual Advance
-            BigDecimal loanEmi = safeAdd(p.getLoanDeduction());
+            // Loan/Advance breakdown
+            BigDecimal loanEmi = safeAdd(p.getLoanDeduction());  // Fixed EMI
+            BigDecimal flexibleRecovery = safeAdd(p.getFlexibleLoanDeduction());  // Flexible loan recovery
             BigDecimal totalAdv = safeAdd(p.getAdvance());
-            BigDecimal manualAdvance = totalAdv.subtract(loanEmi);
-            if (manualAdvance.compareTo(BigDecimal.ZERO) < 0) manualAdvance = BigDecimal.ZERO;
+            // New advance = total - EMI - flexible recovery
+            BigDecimal newAdvance = totalAdv.subtract(loanEmi).subtract(flexibleRecovery);
+            if (newAdvance.compareTo(BigDecimal.ZERO) < 0) newAdvance = BigDecimal.ZERO;
             
-            row.put("manualAdvance", manualAdvance);
-            row.put("advance", p.getAdvance()); // Total ADV = Loan EMI + Manual Advance
+            row.put("loanEmi", loanEmi);  // Fixed EMI loans
+            row.put("flexibleRecovery", flexibleRecovery);  // Loan recovery (flexible)
+            row.put("newAdvance", newAdvance);  // New advance given this month
+            row.put("advance", totalAdv);  // Total ADV = EMI + Flexible + New
+            row.put("activeLoansCount", empLoans.size());
             row.put("due", p.getDue());
             row.put("otherDeduction", p.getOtherDeduction());
             row.put("totalDeductions", p.getTotalDeductions());
@@ -446,17 +447,20 @@ public class ReportService {
         List<Loan> activeLoans = loanRepo.findByTenantIdAndEmpIdAndStatus(
                 tenantId, empId, com.example.hrms.loan.domain.enums.LoanStatus.ACTIVE);
         
-        // Loan breakdown
-        BigDecimal loanEmi = safeAdd(payroll.getLoanDeduction());
+        // Loan breakdown - separate fixed EMI, flexible recovery, and new advances
+        BigDecimal loanEmi = safeAdd(payroll.getLoanDeduction());  // Fixed EMI from active loans
+        BigDecimal flexibleRecovery = safeAdd(payroll.getFlexibleLoanDeduction());  // Recovery from existing flexible loans
         BigDecimal totalAdv = safeAdd(payroll.getAdvance());
-        BigDecimal manualAdvance = totalAdv.subtract(loanEmi);
-        if (manualAdvance.compareTo(BigDecimal.ZERO) < 0) manualAdvance = BigDecimal.ZERO;
+        // New advance = total advance - fixed EMI - flexible recovery
+        BigDecimal newAdvance = totalAdv.subtract(loanEmi).subtract(flexibleRecovery);
+        if (newAdvance.compareTo(BigDecimal.ZERO) < 0) newAdvance = BigDecimal.ZERO;
         
         List<Map<String, Object>> loanDetails = activeLoans.stream().map(loan -> {
             Map<String, Object> loanInfo = new LinkedHashMap<>();
             loanInfo.put("loanId", loan.getId());
             loanInfo.put("loanType", loan.getLoanType() != null ? loan.getLoanType().name() : "UNKNOWN");
             loanInfo.put("isOneTimeDeduction", Boolean.TRUE.equals(loan.getIsOneTimeDeduction()));
+            loanInfo.put("isFlexibleDeduction", Boolean.TRUE.equals(loan.getIsFlexibleDeduction()));
             loanInfo.put("emiAmount", loan.getEmiAmount());
             loanInfo.put("outstandingBalance", loan.getOutstandingBalance());
             loanInfo.put("emisRemaining", (loan.getTenureMonths() != null ? loan.getTenureMonths() : 0) - 
@@ -464,13 +468,26 @@ public class ReportService {
             return loanInfo;
         }).toList();
 
-        // Deductions with breakdown
+        // Deductions with proper breakdown
         Map<String, BigDecimal> deductions = new LinkedHashMap<>();
         deductions.put("ESI (0.75%)", payroll.getEsiEmployee());
         deductions.put("PF Own (6%)", payroll.getPfEmployee());
-        deductions.put("Loan EMI", loanEmi);
-        deductions.put("Manual Advance", manualAdvance);
-        deductions.put("Total Advance (ADV)", payroll.getAdvance());
+        
+        // Only show non-zero loan-related deductions
+        if (loanEmi.compareTo(BigDecimal.ZERO) > 0) {
+            deductions.put("Loan EMI (Fixed)", loanEmi);
+        }
+        if (flexibleRecovery.compareTo(BigDecimal.ZERO) > 0) {
+            deductions.put("Loan Recovery (Flexible)", flexibleRecovery);
+        }
+        if (newAdvance.compareTo(BigDecimal.ZERO) > 0) {
+            deductions.put("New Advance Given", newAdvance);
+        }
+        // Total ADV only if there are any advances
+        if (totalAdv.compareTo(BigDecimal.ZERO) > 0) {
+            deductions.put("Total Advance (ADV)", totalAdv);
+        }
+        
         deductions.put("Due (Previous Outstanding)", payroll.getDue());
         deductions.put("Professional Tax", payroll.getProfessionalTax());
         deductions.put("TDS", payroll.getTds());
@@ -478,13 +495,15 @@ public class ReportService {
         payslip.put("deductions", deductions);
         payslip.put("totalDeductions", payroll.getTotalDeductions());
         
-        // Loan info section
-        payslip.put("loanInfo", Map.of(
-                "activeLoansCount", activeLoans.size(),
-                "totalLoanEmi", loanEmi,
-                "manualAdvance", manualAdvance,
-                "loans", loanDetails
-        ));
+        // Loan info section with detailed breakdown
+        Map<String, Object> loanInfoMap = new LinkedHashMap<>();
+        loanInfoMap.put("activeLoansCount", activeLoans.size());
+        loanInfoMap.put("loanEmi", loanEmi);
+        loanInfoMap.put("flexibleRecovery", flexibleRecovery);
+        loanInfoMap.put("newAdvance", newAdvance);
+        loanInfoMap.put("totalAdvance", totalAdv);
+        loanInfoMap.put("loans", loanDetails);
+        payslip.put("loanInfo", loanInfoMap);
 
         // Net Pay
         payslip.put("netSalary", payroll.getNetSalary());
