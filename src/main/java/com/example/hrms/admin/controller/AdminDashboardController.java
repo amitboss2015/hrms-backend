@@ -5,16 +5,21 @@ import com.example.hrms.admin.domain.TrialTracking;
 import com.example.hrms.admin.service.AdminDashboardService;
 import com.example.hrms.admin.service.CompanyManagementService;
 import com.example.hrms.admin.service.FraudDetectionService;
+import com.example.hrms.attendance.domain.BiometricDevice;
+import com.example.hrms.attendance.repo.BiometricDeviceRepository;
 import com.example.hrms.tenant.domain.Tenant;
+import com.example.hrms.tenant.repo.TenantRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
-import java.util.Map;
+import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * Admin Dashboard API for Super Admin
@@ -31,6 +36,9 @@ public class AdminDashboardController {
     private final AdminDashboardService dashboardService;
     private final FraudDetectionService fraudService;
     private final CompanyManagementService companyService;
+    private final BiometricDeviceRepository deviceRepo;
+    private final TenantRepository tenantRepo;
+    private final JdbcTemplate jdbcTemplate;
 
     // ==================== DASHBOARD ====================
 
@@ -291,6 +299,121 @@ public class AdminDashboardController {
                 "tenantId", tenantId
             ));
         }
+    }
+
+    // ==================== BIOMETRIC DEVICE CLEANUP ====================
+
+    /**
+     * Get all biometric devices across all tenants (superadmin view)
+     */
+    @GetMapping("/devices")
+    public ResponseEntity<List<Map<String, Object>>> getAllDevices() {
+        List<BiometricDevice> devices = deviceRepo.findAll();
+        
+        List<Map<String, Object>> result = devices.stream().map(d -> {
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("id", d.getId());
+            map.put("tenantId", d.getTenantId());
+            map.put("deviceCode", d.getDeviceCode());
+            map.put("deviceName", d.getDeviceName());
+            map.put("isDefault", d.getIsDefault());
+            map.put("isActive", d.getIsActive());
+            return map;
+        }).collect(Collectors.toList());
+        
+        return ResponseEntity.ok(result);
+    }
+
+    /**
+     * Clean up orphan and duplicate biometric devices across ALL tenants.
+     * - Removes devices where tenant no longer exists
+     * - Removes duplicate devices (keeps lowest ID for each tenant+deviceCode)
+     */
+    @DeleteMapping("/devices/cleanup-all")
+    @Transactional
+    public ResponseEntity<Map<String, Object>> cleanupAllDevices() {
+        Map<String, Object> result = new LinkedHashMap<>();
+        
+        // Get all valid tenant IDs
+        Set<String> validTenantIds = tenantRepo.findAll().stream()
+                .map(Tenant::getId)
+                .collect(Collectors.toSet());
+        
+        // Get all devices
+        List<BiometricDevice> allDevices = deviceRepo.findAll();
+        
+        int orphansDeleted = 0;
+        int duplicatesDeleted = 0;
+        List<String> orphanDetails = new ArrayList<>();
+        List<String> duplicateDetails = new ArrayList<>();
+        
+        // 1. Delete orphan devices (tenant doesn't exist)
+        for (BiometricDevice device : allDevices) {
+            if (!validTenantIds.contains(device.getTenantId())) {
+                orphanDetails.add(String.format("ID=%d, Tenant=%s, Code=%s", 
+                        device.getId(), device.getTenantId(), device.getDeviceCode()));
+                deviceRepo.delete(device);
+                orphansDeleted++;
+            }
+        }
+        
+        // 2. Delete duplicates (same tenant + deviceCode, keep lowest ID)
+        // Re-fetch after orphan deletion
+        allDevices = deviceRepo.findAll();
+        
+        Map<String, List<BiometricDevice>> grouped = allDevices.stream()
+                .collect(Collectors.groupingBy(d -> d.getTenantId() + "|" + d.getDeviceCode()));
+        
+        for (Map.Entry<String, List<BiometricDevice>> entry : grouped.entrySet()) {
+            List<BiometricDevice> devices = entry.getValue();
+            if (devices.size() > 1) {
+                // Sort by ID, keep first
+                devices.sort((a, b) -> a.getId().compareTo(b.getId()));
+                for (int i = 1; i < devices.size(); i++) {
+                    BiometricDevice dup = devices.get(i);
+                    duplicateDetails.add(String.format("ID=%d, Tenant=%s, Code=%s", 
+                            dup.getId(), dup.getTenantId(), dup.getDeviceCode()));
+                    deviceRepo.delete(dup);
+                    duplicatesDeleted++;
+                }
+            }
+        }
+        
+        log.info("🧹 Cleanup complete: {} orphans, {} duplicates removed", orphansDeleted, duplicatesDeleted);
+        
+        result.put("orphansDeleted", orphansDeleted);
+        result.put("orphanDetails", orphanDetails);
+        result.put("duplicatesDeleted", duplicatesDeleted);
+        result.put("duplicateDetails", duplicateDetails);
+        result.put("totalDeleted", orphansDeleted + duplicatesDeleted);
+        result.put("remainingDevices", deviceRepo.count());
+        
+        return ResponseEntity.ok(result);
+    }
+
+    /**
+     * Delete a specific device by ID (superadmin)
+     */
+    @DeleteMapping("/devices/{deviceId}")
+    @Transactional
+    public ResponseEntity<Map<String, Object>> deleteDevice(@PathVariable Long deviceId) {
+        Optional<BiometricDevice> deviceOpt = deviceRepo.findById(deviceId);
+        
+        if (deviceOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        
+        BiometricDevice device = deviceOpt.get();
+        String info = String.format("ID=%d, Tenant=%s, Code=%s, Name=%s", 
+                device.getId(), device.getTenantId(), device.getDeviceCode(), device.getDeviceName());
+        
+        deviceRepo.delete(device);
+        log.info("🗑️ Superadmin deleted device: {}", info);
+        
+        return ResponseEntity.ok(Map.of(
+                "deleted", true,
+                "device", info
+        ));
     }
 
     // ==================== REQUEST RECORDS ====================
