@@ -71,36 +71,50 @@ public class AttendanceExcelService {
     }
 
     /**
-     * Generate a matrix-style attendance import template Excel file.
-     * Format: EmpCode | Name | 1 | 2 | 3 | ... | 31 (days as columns)
-     * Each day cell contains IN time on line 1, OUT time on line 2
+     * Generate attendance import template in biometric export format (List of Logs style).
+     * Format matches the biometric machine export with:
+     * - Row 1: "List of Logs" title
+     * - Row 3: Period info
+     * - Row 4: Day numbers header (1-31)
+     * - For each employee: 3 rows (No/Name/Dept, punch data, day numbers)
      * 
      * @param tenantId The tenant ID
      * @param yearMonth The year/month for the template
-     * @param deviceId Optional - if provided, only employees assigned to this device will be included,
-     *                 and device_emp_code will be used in the EmpCode column
+     * @param deviceId Optional - if provided, only employees assigned to this device will be included
      */
     public byte[] generateTemplate(String tenantId, java.time.YearMonth yearMonth, Long deviceId) throws IOException {
         try (XSSFWorkbook workbook = new XSSFWorkbook()) {
             int daysInMonth = yearMonth.lengthOfMonth();
             
-            Sheet sheet = workbook.createSheet("Logs");
+            Sheet sheet = workbook.createSheet("List of Logs");
 
-            // Create header style
-            CellStyle headerStyle = workbook.createCellStyle();
-            Font headerFont = workbook.createFont();
-            headerFont.setBold(true);
-            headerFont.setColor(IndexedColors.WHITE.getIndex());
-            headerStyle.setFont(headerFont);
-            headerStyle.setFillForegroundColor(IndexedColors.DARK_BLUE.getIndex());
-            headerStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
-            headerStyle.setBorderBottom(BorderStyle.THIN);
-            headerStyle.setBorderTop(BorderStyle.THIN);
-            headerStyle.setBorderLeft(BorderStyle.THIN);
-            headerStyle.setBorderRight(BorderStyle.THIN);
-            headerStyle.setAlignment(HorizontalAlignment.CENTER);
+            // ========== STYLES ==========
+            
+            // Title style (green, bold, large)
+            CellStyle titleStyle = workbook.createCellStyle();
+            Font titleFont = workbook.createFont();
+            titleFont.setBold(true);
+            titleFont.setFontHeightInPoints((short) 18);
+            titleFont.setColor(IndexedColors.DARK_GREEN.getIndex());
+            titleStyle.setFont(titleFont);
+            titleStyle.setAlignment(HorizontalAlignment.CENTER);
 
-            // Create cell style for data cells (with wrap text for multi-line punch times)
+            // Blue header style (for day numbers and employee info rows)
+            CellStyle blueHeaderStyle = workbook.createCellStyle();
+            Font blueHeaderFont = workbook.createFont();
+            blueHeaderFont.setBold(true);
+            blueHeaderFont.setColor(IndexedColors.WHITE.getIndex());
+            blueHeaderStyle.setFont(blueHeaderFont);
+            blueHeaderStyle.setFillForegroundColor(IndexedColors.ROYAL_BLUE.getIndex());
+            blueHeaderStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+            blueHeaderStyle.setBorderBottom(BorderStyle.THIN);
+            blueHeaderStyle.setBorderTop(BorderStyle.THIN);
+            blueHeaderStyle.setBorderLeft(BorderStyle.THIN);
+            blueHeaderStyle.setBorderRight(BorderStyle.THIN);
+            blueHeaderStyle.setAlignment(HorizontalAlignment.CENTER);
+            blueHeaderStyle.setVerticalAlignment(VerticalAlignment.CENTER);
+
+            // Data style for punch times
             CellStyle dataStyle = workbook.createCellStyle();
             dataStyle.setWrapText(true);
             dataStyle.setVerticalAlignment(VerticalAlignment.TOP);
@@ -108,80 +122,162 @@ public class AttendanceExcelService {
             dataStyle.setBorderTop(BorderStyle.THIN);
             dataStyle.setBorderLeft(BorderStyle.THIN);
             dataStyle.setBorderRight(BorderStyle.THIN);
+            dataStyle.setAlignment(HorizontalAlignment.CENTER);
 
-            // Row 0: Period info
-            Row periodRow = sheet.createRow(0);
-            periodRow.createCell(0).setCellValue("Period:");
-            periodRow.createCell(1).setCellValue(yearMonth.getYear() + "/" + 
-                String.format("%02d", yearMonth.getMonthValue()) + "/01 ~ " +
-                String.format("%02d", daysInMonth));
+            // Green text style for employee info labels
+            CellStyle greenTextStyle = workbook.createCellStyle();
+            Font greenFont = workbook.createFont();
+            greenFont.setColor(IndexedColors.DARK_GREEN.getIndex());
+            greenTextStyle.setFont(greenFont);
+            greenTextStyle.setBorderBottom(BorderStyle.THIN);
+            greenTextStyle.setBorderTop(BorderStyle.THIN);
+            greenTextStyle.setBorderLeft(BorderStyle.THIN);
+            greenTextStyle.setBorderRight(BorderStyle.THIN);
 
-            // Row 1: Header row with day numbers
-            Row headerRow = sheet.createRow(1);
-            Cell empCodeHeader = headerRow.createCell(0);
-            empCodeHeader.setCellValue("EmpCode");
-            empCodeHeader.setCellStyle(headerStyle);
-            sheet.setColumnWidth(0, 3000);
+            // ========== ROW 0-1: Title "List of Logs" ==========
+            Row titleRow = sheet.createRow(0);
+            // Empty row for spacing
+            Row titleRow2 = sheet.createRow(1);
+            Cell titleCell = titleRow2.createCell(4);
+            titleCell.setCellValue("List of Logs");
+            titleCell.setCellStyle(titleStyle);
 
-            Cell nameHeader = headerRow.createCell(1);
-            nameHeader.setCellValue("Name");
-            nameHeader.setCellStyle(headerStyle);
-            sheet.setColumnWidth(1, 5000);
+            // ========== ROW 2: Period info ==========
+            Row periodRow = sheet.createRow(2);
+            Cell periodLabel = periodRow.createCell(0);
+            periodLabel.setCellValue("Period :");
+            periodLabel.setCellStyle(greenTextStyle);
+            Cell periodValue = periodRow.createCell(1);
+            periodValue.setCellValue(String.format("%d/%02d/01 ~ %02d/%d", 
+                    yearMonth.getYear(), yearMonth.getMonthValue(), 
+                    daysInMonth, daysInMonth));
+            periodValue.setCellStyle(greenTextStyle);
 
-            // Day columns (1 to 31)
+            // ========== ROW 3: Day numbers header ==========
+            Row dayHeaderRow = sheet.createRow(3);
+            // Column A is for serial number
+            Cell serialHeader = dayHeaderRow.createCell(0);
+            serialHeader.setCellValue("");
+            serialHeader.setCellStyle(blueHeaderStyle);
+            sheet.setColumnWidth(0, 2000);
+
+            // Columns B onwards: day numbers 1-31
             for (int day = 1; day <= 31; day++) {
-                Cell dayCell = headerRow.createCell(day + 1);
+                Cell dayCell = dayHeaderRow.createCell(day);
                 dayCell.setCellValue(day);
-                dayCell.setCellStyle(headerStyle);
-                sheet.setColumnWidth(day + 1, 2500);
+                dayCell.setCellStyle(blueHeaderStyle);
+                sheet.setColumnWidth(day, 1800);
             }
 
-            // Get employees - filter by device if deviceId is provided
+            // ========== GET EMPLOYEES ==========
             List<Employee> employees;
             if (deviceId != null) {
                 employees = employeeRepo.findByBiometricDeviceId(deviceId);
-                log.info("Generating attendance template for device ID: {} with {} employees", deviceId, employees.size());
+                log.info("Generating biometric-style template for device ID: {} with {} employees", deviceId, employees.size());
             } else {
                 employees = employeeRepo.findByTenantId(tenantId);
             }
+
+            // ========== EMPLOYEE ROWS (3 rows per employee) ==========
+            int rowNum = 4; // Start after header
+            int empNum = 1;
             
-            int rowNum = 2;
             for (Employee emp : employees) {
-                Row dataRow = sheet.createRow(rowNum);
-                dataRow.setHeightInPoints(30); // Height for 2 lines
-                
-                // For device-specific templates, use deviceEmpCode if available
-                Cell codeCell = dataRow.createCell(0);
                 String empCodeToUse = (deviceId != null && emp.getDeviceEmpCode() != null && !emp.getDeviceEmpCode().isEmpty())
                         ? emp.getDeviceEmpCode()
                         : emp.getEmpCode();
-                codeCell.setCellValue(empCodeToUse);
-                codeCell.setCellStyle(dataStyle);
+                String empName = emp.getFirstName() + (emp.getLastName() != null ? " " + emp.getLastName() : "");
+                String dept = emp.getDepartment() != null ? emp.getDepartment() : "Unset";
+
+                // Row 1 of 3: Employee info row (No: | emp_code | Name: | name | Dept: | dept | Unset)
+                Row infoRow = sheet.createRow(rowNum);
+                Cell noLabel = infoRow.createCell(0);
+                noLabel.setCellValue("No :");
+                noLabel.setCellStyle(blueHeaderStyle);
                 
-                Cell nameCell = dataRow.createCell(1);
-                nameCell.setCellValue(emp.getFirstName() + 
-                    (emp.getLastName() != null ? " " + emp.getLastName() : ""));
-                nameCell.setCellStyle(dataStyle);
+                Cell noValue = infoRow.createCell(1);
+                noValue.setCellValue(empCodeToUse);
+                noValue.setCellStyle(blueHeaderStyle);
                 
-                // Empty cells for each day (user will fill in)
+                // Skip columns 2-7, put Name label at column 8
+                Cell nameLabel = infoRow.createCell(8);
+                nameLabel.setCellValue("Name :");
+                nameLabel.setCellStyle(blueHeaderStyle);
+                
+                Cell nameValue = infoRow.createCell(9);
+                nameValue.setCellValue(empName);
+                nameValue.setCellStyle(blueHeaderStyle);
+                
+                // Dept at column 17
+                Cell deptLabel = infoRow.createCell(17);
+                deptLabel.setCellValue("Dept :");
+                deptLabel.setCellStyle(blueHeaderStyle);
+                
+                Cell deptValue = infoRow.createCell(18);
+                deptValue.setCellValue("Unset");
+                deptValue.setCellStyle(blueHeaderStyle);
+                
+                rowNum++;
+
+                // Row 2 of 3: Punch data row (empty - user will fill)
+                Row punchRow = sheet.createRow(rowNum);
+                punchRow.setHeightInPoints(30); // Height for 2 lines (IN/OUT)
+                
+                // First cell is empty (for row number area)
+                Cell emptyCell = punchRow.createCell(0);
+                emptyCell.setCellStyle(dataStyle);
+                
+                // Day cells 1-31 (user fills with "09:00\n17:30" format)
                 for (int day = 1; day <= 31; day++) {
-                    Cell dayCell = dataRow.createCell(day + 1);
+                    Cell dayCell = punchRow.createCell(day);
                     dayCell.setCellStyle(dataStyle);
-                    // Leave empty - user will fill with format: "09:00\n17:30"
+                    // Leave empty - user fills with punch times
                 }
                 
                 rowNum++;
+
+                // Row 3 of 3: Day numbers row (1-31)
+                Row dayNumRow = sheet.createRow(rowNum);
+                Cell serialCell = dayNumRow.createCell(0);
+                serialCell.setCellValue(empNum);
+                serialCell.setCellStyle(blueHeaderStyle);
+                
+                for (int day = 1; day <= 31; day++) {
+                    Cell dayCell = dayNumRow.createCell(day);
+                    dayCell.setCellValue(day);
+                    dayCell.setCellStyle(blueHeaderStyle);
+                }
+                
+                rowNum++;
+                empNum++;
             }
 
-            // If no employees, add a sample row
+            // If no employees, add a sample entry
             if (employees.isEmpty()) {
-                Row sampleRow = sheet.createRow(2);
-                sampleRow.setHeightInPoints(30);
-                sampleRow.createCell(0).setCellValue("EMP001");
-                sampleRow.createCell(1).setCellValue("Sample Employee");
-                Cell sampleDayCell = sampleRow.createCell(2);
-                sampleDayCell.setCellValue("09:00\n17:30");
-                sampleDayCell.setCellStyle(dataStyle);
+                // Sample info row
+                Row infoRow = sheet.createRow(rowNum);
+                infoRow.createCell(0).setCellValue("No :");
+                infoRow.createCell(1).setCellValue("1");
+                infoRow.createCell(8).setCellValue("Name :");
+                infoRow.createCell(9).setCellValue("Sample Employee");
+                infoRow.createCell(17).setCellValue("Dept :");
+                infoRow.createCell(18).setCellValue("Unset");
+                rowNum++;
+                
+                // Sample punch row
+                Row punchRow = sheet.createRow(rowNum);
+                punchRow.setHeightInPoints(30);
+                Cell samplePunch = punchRow.createCell(1);
+                samplePunch.setCellValue("09:00\n17:30");
+                samplePunch.setCellStyle(dataStyle);
+                rowNum++;
+                
+                // Sample day number row
+                Row dayNumRow = sheet.createRow(rowNum);
+                dayNumRow.createCell(0).setCellValue(1);
+                for (int day = 1; day <= 31; day++) {
+                    dayNumRow.createCell(day).setCellValue(day);
+                }
             }
 
             // Create instruction sheet
