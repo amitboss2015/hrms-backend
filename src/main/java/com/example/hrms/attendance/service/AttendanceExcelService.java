@@ -64,11 +64,23 @@ public class AttendanceExcelService {
     );
 
     /**
+     * Generate a matrix-style attendance import template Excel file (backward compatible - no device filter).
+     */
+    public byte[] generateTemplate(String tenantId, java.time.YearMonth yearMonth) throws IOException {
+        return generateTemplate(tenantId, yearMonth, null);
+    }
+
+    /**
      * Generate a matrix-style attendance import template Excel file.
      * Format: EmpCode | Name | 1 | 2 | 3 | ... | 31 (days as columns)
      * Each day cell contains IN time on line 1, OUT time on line 2
+     * 
+     * @param tenantId The tenant ID
+     * @param yearMonth The year/month for the template
+     * @param deviceId Optional - if provided, only employees assigned to this device will be included,
+     *                 and device_emp_code will be used in the EmpCode column
      */
-    public byte[] generateTemplate(String tenantId, java.time.YearMonth yearMonth) throws IOException {
+    public byte[] generateTemplate(String tenantId, java.time.YearMonth yearMonth, Long deviceId) throws IOException {
         try (XSSFWorkbook workbook = new XSSFWorkbook()) {
             int daysInMonth = yearMonth.lengthOfMonth();
             
@@ -124,16 +136,26 @@ public class AttendanceExcelService {
                 sheet.setColumnWidth(day + 1, 2500);
             }
 
-            // Get employees for this tenant to pre-populate template
-            List<Employee> employees = employeeRepo.findByTenantId(tenantId);
+            // Get employees - filter by device if deviceId is provided
+            List<Employee> employees;
+            if (deviceId != null) {
+                employees = employeeRepo.findByBiometricDeviceId(deviceId);
+                log.info("Generating attendance template for device ID: {} with {} employees", deviceId, employees.size());
+            } else {
+                employees = employeeRepo.findByTenantId(tenantId);
+            }
             
             int rowNum = 2;
             for (Employee emp : employees) {
                 Row dataRow = sheet.createRow(rowNum);
                 dataRow.setHeightInPoints(30); // Height for 2 lines
                 
+                // For device-specific templates, use deviceEmpCode if available
                 Cell codeCell = dataRow.createCell(0);
-                codeCell.setCellValue(emp.getEmpCode());
+                String empCodeToUse = (deviceId != null && emp.getDeviceEmpCode() != null && !emp.getDeviceEmpCode().isEmpty())
+                        ? emp.getDeviceEmpCode()
+                        : emp.getEmpCode();
+                codeCell.setCellValue(empCodeToUse);
                 codeCell.setCellStyle(dataStyle);
                 
                 Cell nameCell = dataRow.createCell(1);

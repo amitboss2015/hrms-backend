@@ -319,13 +319,16 @@ public class AttendanceImportController {
     // ==================== TEMPLATE DOWNLOAD ====================
 
     /**
-     * Download the attendance import template for a specific month/year.
+     * Download the attendance import template for a specific month/year and biometric device.
      * The template is pre-filled with employee list and has the same format as biometric exports.
+     * The deviceId/deviceCode is encoded in the filename for validation during import.
      */
     @GetMapping("/template/download")
     public ResponseEntity<byte[]> downloadAttendanceTemplate(
             @RequestParam(value = "month", required = false) Integer month,
-            @RequestParam(value = "year", required = false) Integer year) {
+            @RequestParam(value = "year", required = false) Integer year,
+            @RequestParam(value = "deviceId", required = false) Long deviceId,
+            @RequestParam(value = "deviceCode", required = false) String deviceCode) {
         try {
             String tenantId = TenantContext.getTenantId();
             
@@ -334,9 +337,18 @@ public class AttendanceImportController {
                 ? java.time.YearMonth.of(year, month)
                 : java.time.YearMonth.now();
             
-            byte[] template = attendanceExcelService.generateTemplate(tenantId, ym);
+            byte[] template = attendanceExcelService.generateTemplate(tenantId, ym, deviceId);
             
-            String filename = String.format("attendance_template_%d_%02d.xlsx", ym.getYear(), ym.getMonthValue());
+            // Build filename with embedded device info (similar to employee import)
+            String filename;
+            if (deviceId != null && deviceCode != null && !deviceCode.isEmpty()) {
+                // Encode device info in filename: attendance_template_YYYY_MM_device_ID_CODE.xlsx
+                filename = String.format("attendance_template_%d_%02d_device_%d_%s.xlsx", 
+                        ym.getYear(), ym.getMonthValue(), deviceId, deviceCode.replaceAll("[^a-zA-Z0-9_-]", "_"));
+                log.info("Generating attendance template with device: {} ({})", deviceCode, deviceId);
+            } else {
+                filename = String.format("attendance_template_%d_%02d.xlsx", ym.getYear(), ym.getMonthValue());
+            }
             
             return ResponseEntity.ok()
                     .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=" + filename)
