@@ -24,4 +24,13 @@ public interface AttendanceSessionRepository extends JpaRepository<AttendanceSes
     void deleteByOrgIdAndWorkDateBetween(@Param("orgId") Long orgId, 
                                           @Param("fromDate") LocalDate fromDate, 
                                           @Param("toDate") LocalDate toDate);
+
+    /**
+     * OPTIMIZED: Batch delete sessions for multiple employees.
+     */
+    @Modifying
+    @Query("DELETE FROM AttendanceSession s WHERE s.employeeId IN :employeeIds AND s.workDate >= :fromDate AND s.workDate <= :toDate")
+    void deleteByEmployeeIdInAndWorkDateBetween(@Param("employeeIds") List<Long> employeeIds,
+                                                 @Param("fromDate") LocalDate fromDate,
+                                                 @Param("toDate") LocalDate toDate);
 }

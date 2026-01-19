@@ -92,4 +92,13 @@ public interface AttendanceDayRepository extends JpaRepository<AttendanceDay, Lo
      */
     List<AttendanceDay> findByTenantIdAndWorkDateBetweenAndStatus(
         String tenantId, LocalDate from, LocalDate to, String status);
+
+    /**
+     * OPTIMIZED: Batch delete days for multiple employees.
+     */
+    @Modifying
+    @Query("DELETE FROM AttendanceDay d WHERE d.employeeId IN :employeeIds AND d.workDate >= :fromDate AND d.workDate <= :toDate")
+    void deleteByEmployeeIdInAndWorkDateBetween(@Param("employeeIds") List<Long> employeeIds,
+                                                 @Param("fromDate") LocalDate fromDate,
+                                                 @Param("toDate") LocalDate toDate);
 }

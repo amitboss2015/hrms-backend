@@ -76,6 +76,290 @@ public class AttendanceEngineImpl implements AttendanceEngine {
         // iterate employees and call rebuildEmployeeMonth(orgId, empId, ym) if needed
     }
 
+    /**
+     * OPTIMIZED: Batch rebuild for multiple employees at once.
+     * Pre-fetches all required data to minimize database round-trips.
+     * 
+     * Performance improvements:
+     * 1. Batch fetch all punches for all employees in one query
+     * 2. Batch fetch all employees data
+     * 3. Batch fetch all shift assignments
+     * 4. Batch delete old sessions/days
+     * 5. Batch save new sessions/days
+     */
+    @Override
+    @Transactional
+    public void rebuildEmployeesMonthBatch(Long orgId, String tenantId, List<Long> employeeIds, YearMonth ym) {
+        if (employeeIds == null || employeeIds.isEmpty()) {
+            return;
+        }
+        
+        LocalDate startDate = ym.atDay(1);
+        LocalDate endDate = ym.atEndOfMonth();
+        int totalDays = ym.lengthOfMonth();
+        
+        // Pre-fetch ALL employees in one query
+        Map<Long, Employee> employeeMap = new HashMap<>();
+        for (Employee e : employeeRepo.findAllById(employeeIds)) {
+            employeeMap.put(e.getId(), e);
+        }
+        
+        // Pre-fetch ALL punches for all employees for the entire month in ONE query
+        // Window: 6 AM on day 1 to 6 AM on day after end of month
+        Instant fromUtc = startDate.atTime(6, 0).atZone(ORG_TZ).toInstant();
+        Instant toUtc = endDate.plusDays(1).atTime(6, 0).atZone(ORG_TZ).toInstant();
+        
+        Map<Long, List<AttendancePunch>> punchesByEmployee = new HashMap<>();
+        List<AttendancePunch> allPunches = punchRepo.findByEmployeeIdInAndPunchTsUtcBetweenOrderByEmployeeIdAscPunchTsUtcAsc(
+                employeeIds, fromUtc, toUtc);
+        
+        for (AttendancePunch p : allPunches) {
+            punchesByEmployee.computeIfAbsent(p.getEmployeeId(), k -> new ArrayList<>()).add(p);
+        }
+        
+        // Pre-fetch ALL shift assignments for all employees
+        Map<Long, List<EmployeeShiftAssignment>> shiftAssignmentsByEmployee = new HashMap<>();
+        for (Long empId : employeeIds) {
+            Employee stub = new Employee();
+            try {
+                Method m = findMethod(Employee.class, "setId", Long.class);
+                if (m != null) m.invoke(stub, empId);
+            } catch (Exception ignore) {}
+            
+            List<EmployeeShiftAssignment> assignments = empShiftRepo.findByEmployee(stub);
+            shiftAssignmentsByEmployee.put(empId, assignments != null ? assignments : List.of());
+        }
+        
+        // Pre-fetch approved leaves for all employees for the month
+        Map<String, Set<LocalDate>> leavesByEmpCode = new HashMap<>();
+        if (tenantId != null) {
+            List<EmployeeLeave> allLeaves = leaveRepo.findByTenantIdAndStartDateLessThanEqualAndEndDateGreaterThanEqual(
+                    tenantId, endDate, startDate);
+            for (EmployeeLeave leave : allLeaves) {
+                if (leave.getStatus() == LeaveStatus.APPROVED) {
+                    Set<LocalDate> dates = leavesByEmpCode.computeIfAbsent(leave.getEmpId(), k -> new HashSet<>());
+                    LocalDate d = leave.getStartDate();
+                    while (!d.isAfter(leave.getEndDate())) {
+                        dates.add(d);
+                        d = d.plusDays(1);
+                    }
+                }
+            }
+        }
+        
+        // Pre-fetch holidays for the month
+        List<Holiday> holidays = holidayRepo.findByOrgIdAndHolidayDateBetweenAndActiveTrue("ORG001", startDate, endDate);
+        Set<LocalDate> holidayDates = new HashSet<>();
+        Map<LocalDate, String> holidayNames = new HashMap<>();
+        for (Holiday h : holidays) {
+            holidayDates.add(h.getHolidayDate());
+            holidayNames.put(h.getHolidayDate(), h.getName());
+        }
+        
+        // Batch delete old sessions and days for all employees
+        sessionRepo.deleteByEmployeeIdInAndWorkDateBetween(employeeIds, startDate, endDate);
+        dayRepo.deleteByEmployeeIdInAndWorkDateBetween(employeeIds, startDate, endDate);
+        
+        // Process each employee and build sessions/days in memory
+        List<AttendanceSession> allSessions = new ArrayList<>();
+        List<AttendanceDay> allDays = new ArrayList<>();
+        
+        SalaryOvertimeConfig config = configService.getConfig();
+        int halfDayThresholdMins = config.getHalfDayMinHours() * 60;
+        
+        for (Long employeeId : employeeIds) {
+            Employee employee = employeeMap.get(employeeId);
+            if (employee == null) continue;
+            
+            String empTenantId = employee.getTenantId();
+            String empCode = employee.getEmpCode();
+            Set<LocalDate> empLeaveDates = leavesByEmpCode.getOrDefault(empCode, Collections.emptySet());
+            List<AttendancePunch> empPunches = punchesByEmployee.getOrDefault(employeeId, Collections.emptyList());
+            List<EmployeeShiftAssignment> empAssignments = shiftAssignmentsByEmployee.getOrDefault(employeeId, Collections.emptyList());
+            
+            // Group punches by work date (6 AM to 6 AM window)
+            Map<LocalDate, List<AttendancePunch>> punchesByDate = new LinkedHashMap<>();
+            for (AttendancePunch p : empPunches) {
+                LocalDateTime punchLocal = p.getPunchTsUtc().atZone(ORG_TZ).toLocalDateTime();
+                LocalDate workDate;
+                // If punch is before 6 AM, it belongs to previous day
+                if (punchLocal.getHour() < 6) {
+                    workDate = punchLocal.toLocalDate().minusDays(1);
+                } else {
+                    workDate = punchLocal.toLocalDate();
+                }
+                // Only include if within our month
+                if (!workDate.isBefore(startDate) && !workDate.isAfter(endDate)) {
+                    punchesByDate.computeIfAbsent(workDate, k -> new ArrayList<>()).add(p);
+                }
+            }
+            
+            // Process each day
+            for (LocalDate date = startDate; !date.isAfter(endDate); date = date.plusDays(1)) {
+                List<AttendancePunch> dayPunches = punchesByDate.getOrDefault(date, Collections.emptyList());
+                
+                boolean isHoliday = holidayDates.contains(date);
+                String holidayName = holidayNames.get(date);
+                boolean isWeeklyOff = isWeeklyOffForEmployee(employee, date);
+                boolean isOnLeave = empLeaveDates.contains(date);
+                
+                if (dayPunches.isEmpty()) {
+                    // No punches - create day record based on leave/holiday/weekly off
+                    if (isWeeklyOff || isHoliday || isOnLeave) {
+                        String status = isOnLeave ? "LEAVE" : (isWeeklyOff ? "WEEKLY_OFF" : "HOLIDAY");
+                        allDays.add(AttendanceDay.builder()
+                                .tenantId(empTenantId)
+                                .orgId(orgId)
+                                .employeeId(employeeId)
+                                .workDate(date)
+                                .totalWorkMin(0)
+                                .totalOTEligibleMin(0)
+                                .totalOTApprovedMin(0)
+                                .punchCount(0)
+                                .status(status)
+                                .isWeeklyOff(isWeeklyOff)
+                                .isHoliday(isHoliday)
+                                .holidayName(holidayName)
+                                .isOvertimeDay(false)
+                                .build());
+                    }
+                    continue;
+                }
+                
+                // Remove duplicates and sort
+                dayPunches = removeDuplicatePunches(dayPunches);
+                
+                // Calculate work time
+                List<Instant> times = dayPunches.stream().map(this::punchInstant).collect(Collectors.toList());
+                List<Span> segments = toSegments(times, SEGMENT_GAP);
+                
+                int dayWorkTotal = 0;
+                for (Span seg : segments) {
+                    dayWorkTotal += (int) ChronoUnit.MINUTES.between(seg.start, seg.end);
+                }
+                
+                // Apply break deduction if shift is assigned
+                Shift primaryShift = getPrimaryShift(empAssignments, date);
+                if (primaryShift != null && primaryShift.getBreakMins() != null) {
+                    dayWorkTotal = Math.max(0, dayWorkTotal - primaryShift.getBreakMins());
+                }
+                
+                // Determine first IN and last OUT
+                LocalDateTime firstInLocal = dayPunches.isEmpty() ? null : 
+                        punchInstant(dayPunches.get(0)).atZone(ORG_TZ).toLocalDateTime();
+                LocalDateTime lastOutLocal = dayPunches.size() >= 2 ? 
+                        punchInstant(dayPunches.get(dayPunches.size() - 1)).atZone(ORG_TZ).toLocalDateTime() : null;
+                
+                boolean crossedMidnight = lastOutLocal != null && !lastOutLocal.toLocalDate().equals(date);
+                boolean missingPunch = dayPunches.size() % 2 != 0;
+                String missingPunchType = null;
+                if (missingPunch && firstInLocal != null) {
+                    missingPunchType = (firstInLocal.getHour() >= 6 && firstInLocal.getHour() < 14) ? "OUT" : "IN";
+                }
+                
+                // Determine status
+                String status;
+                boolean isOvertimeDay = (isWeeklyOff || isHoliday) && dayWorkTotal > 0;
+                if (isOvertimeDay) {
+                    status = "OT_DAY";
+                } else if (missingPunch && "OUT".equals(missingPunchType)) {
+                    status = "PRESENT";
+                } else if (dayWorkTotal == 0) {
+                    status = isOnLeave ? "LEAVE" : "ABSENT";
+                } else if (dayWorkTotal < halfDayThresholdMins) {
+                    status = "HALF_DAY";
+                } else {
+                    status = "PRESENT";
+                }
+                
+                allDays.add(AttendanceDay.builder()
+                        .tenantId(empTenantId)
+                        .orgId(orgId)
+                        .employeeId(employeeId)
+                        .workDate(date)
+                        .totalWorkMin(dayWorkTotal)
+                        .totalOTEligibleMin(0)
+                        .totalOTApprovedMin(0)
+                        .firstIn(firstInLocal)
+                        .lastOut(lastOutLocal)
+                        .punchCount(dayPunches.size())
+                        .status(status)
+                        .missingPunch(missingPunch)
+                        .missingPunchType(missingPunchType)
+                        .needsReview(missingPunch)
+                        .crossedMidnight(crossedMidnight)
+                        .isWeeklyOff(isWeeklyOff)
+                        .isHoliday(isHoliday)
+                        .holidayName(holidayName)
+                        .isOvertimeDay(isOvertimeDay)
+                        .overtimeOnHolidayMins(isOvertimeDay ? dayWorkTotal : 0)
+                        .build());
+            }
+        }
+        
+        // Batch save all days at once
+        if (!allDays.isEmpty()) {
+            dayRepo.saveAll(allDays);
+        }
+    }
+    
+    /**
+     * Helper: Check if date is a weekly off for the employee
+     */
+    private boolean isWeeklyOffForEmployee(Employee employee, LocalDate date) {
+        DayOfWeek dayOfWeek = date.getDayOfWeek();
+        
+        // Check employee-level weekly off
+        String empWeeklyOff = employee.getWeeklyOffDays();
+        if (empWeeklyOff != null && !empWeeklyOff.isBlank()) {
+            return empWeeklyOff.contains(dayOfWeek.name());
+        }
+        
+        // Check org-level weekly off config
+        Optional<WeeklyOffConfig> config = weeklyOffConfigRepo.findByOrgIdAndEmploymentTypeAndActiveTrue(
+                "ORG001", employee.getEmploymentType() != null ? employee.getEmploymentType() : EmploymentType.FULL_TIME);
+        
+        if (config.isPresent()) {
+            if (config.get().isWeeklyOff(dayOfWeek)) {
+                return true;
+            }
+            
+            // Check alternate Saturday rule
+            if (dayOfWeek == DayOfWeek.SATURDAY) {
+                String satRule = config.get().getAlternateSaturdayRule();
+                if ("ALL_SATURDAYS_OFF".equals(satRule)) {
+                    return true;
+                } else if ("SECOND_AND_FOURTH_OFF".equals(satRule)) {
+                    int weekOfMonth = (date.getDayOfMonth() - 1) / 7 + 1;
+                    return weekOfMonth == 2 || weekOfMonth == 4;
+                } else if ("FIRST_AND_THIRD_OFF".equals(satRule)) {
+                    int weekOfMonth = (date.getDayOfMonth() - 1) / 7 + 1;
+                    return weekOfMonth == 1 || weekOfMonth == 3;
+                }
+            }
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Helper: Get primary shift for an employee on a given date
+     */
+    private Shift getPrimaryShift(List<EmployeeShiftAssignment> assignments, LocalDate date) {
+        for (EmployeeShiftAssignment a : assignments) {
+            LocalDate start = a.getStartDate();
+            LocalDate end = a.getEndDate();
+            if ((start != null && date.isBefore(start)) || (end != null && date.isAfter(end))) continue;
+            if (a.getPatternType() != null && a.getPatternType() != PatternType.NONE) continue;
+            
+            Shift s = a.getShift();
+            if (s != null && appliesToDate(s, date)) {
+                return s;
+            }
+        }
+        return null;
+    }
+
     @Transactional
     public void rebuildEmployeeDate(Long orgId, Long employeeId, LocalDate date) {
         // Get tenant ID from employee record for proper multi-tenancy

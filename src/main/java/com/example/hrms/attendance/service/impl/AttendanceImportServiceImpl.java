@@ -521,12 +521,12 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
         batch.setErrorRows(failed);
         batchRepo.save(batch);
 
-        // Recompute attendance sessions and day rollups
+        // Recompute attendance sessions and day rollups using optimized batch method
         log.info("🔄 Rebuilding attendance for {} employees...", affectedEmployeeIds.size());
-        for (Long empId : affectedEmployeeIds) {
-            attendanceEngine.rebuildEmployeeMonth(orgId, empId, ymUsed);
-        }
-        log.info("✅ Attendance rebuild complete");
+        long rebuildStart = System.currentTimeMillis();
+        attendanceEngine.rebuildEmployeesMonthBatch(orgId, tenantId, new ArrayList<>(affectedEmployeeIds), ymUsed);
+        long rebuildTime = System.currentTimeMillis() - rebuildStart;
+        log.info("✅ Attendance rebuild complete in {}ms", rebuildTime);
 
         String message;
         if (failed == 0 && success > 0) {

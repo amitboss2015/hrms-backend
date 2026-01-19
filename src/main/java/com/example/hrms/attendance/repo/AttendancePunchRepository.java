@@ -38,4 +38,15 @@ public interface AttendancePunchRepository extends JpaRepository<AttendancePunch
      * Find all punches for a specific import batch.
      */
     List<AttendancePunch> findByImportBatchId(Long batchId);
+
+    /**
+     * OPTIMIZED: Batch fetch punches for multiple employees in one query.
+     * Critical for performance - reduces N queries to 1.
+     */
+    @Query("SELECT p FROM AttendancePunch p WHERE p.employeeId IN :employeeIds " +
+           "AND p.punchTsUtc BETWEEN :start AND :end ORDER BY p.employeeId, p.punchTsUtc ASC")
+    List<AttendancePunch> findByEmployeeIdInAndPunchTsUtcBetweenOrderByEmployeeIdAscPunchTsUtcAsc(
+            @Param("employeeIds") List<Long> employeeIds,
+            @Param("start") Instant start,
+            @Param("end") Instant end);
 }
