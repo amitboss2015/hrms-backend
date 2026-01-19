@@ -59,12 +59,21 @@ public class PublicRegistrationController {
     public ResponseEntity<RegistrationResponse> activateCompany(@PathVariable String token) {
         log.info("🔓 Activation attempt with token: {}...", token.substring(0, Math.min(8, token.length())));
         
-        RegistrationResponse response = registrationService.activateCompany(token);
-        
-        if (response.isSuccess()) {
-            return ResponseEntity.ok(response);
-        } else {
-            return ResponseEntity.badRequest().body(response);
+        try {
+            RegistrationResponse response = registrationService.activateCompany(token);
+            
+            if (response.isSuccess()) {
+                return ResponseEntity.ok(response);
+            } else {
+                return ResponseEntity.badRequest().body(response);
+            }
+        } catch (Exception e) {
+            log.error("❌ Activation failed with exception: {}", e.getMessage(), e);
+            // Return a proper JSON error response instead of letting Spring return HTML error page
+            RegistrationResponse errorResponse = RegistrationResponse.error(
+                "Activation failed due to an internal error. Please contact support or try registering again."
+            );
+            return ResponseEntity.status(500).body(errorResponse);
         }
     }
 

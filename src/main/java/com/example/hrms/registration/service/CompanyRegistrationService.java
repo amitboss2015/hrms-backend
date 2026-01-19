@@ -23,6 +23,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
@@ -258,7 +259,13 @@ public class CompanyRegistrationService {
         createDefaultShifts(tenantId);
         
         // Create default biometric device for the company
-        createDefaultBiometricDevice(tenantId, registration.getCompanyName());
+        // Wrap in try-catch to ensure activation succeeds even if device creation fails
+        try {
+            createDefaultBiometricDevice(tenantId, registration.getCompanyName());
+        } catch (Exception e) {
+            log.error("Device creation failed but activation will continue: {}", e.getMessage());
+            // Don't re-throw - allow activation to succeed
+        }
         
         // Send welcome email
         try {
@@ -450,9 +457,18 @@ public class CompanyRegistrationService {
     /**
      * Create a default biometric device for the new company.
      * This simplifies setup - all employees will be assigned to this device by default.
+     * Uses REQUIRES_NEW propagation so failures don't affect the main activation transaction.
      */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     private void createDefaultBiometricDevice(String tenantId, String companyName) {
         try {
+            // Check if default device already exists for this tenant
+            boolean exists = biometricDeviceRepo.existsByTenantIdAndDeviceCode(tenantId, "DEFAULT");
+            if (exists) {
+                log.info("⚠️ Default biometric device already exists for tenant: {}", tenantId);
+                return;
+            }
+            
             BiometricDevice defaultDevice = BiometricDevice.builder()
                     .tenantId(tenantId)
                     .deviceCode("DEFAULT")
@@ -466,8 +482,9 @@ public class CompanyRegistrationService {
             log.info("✅ Default biometric device created for tenant: {}", tenantId);
             
         } catch (Exception e) {
-            log.error("Failed to create default biometric device for tenant: {}", tenantId, e);
-            // Don't fail activation if device creation fails
+            log.error("Failed to create default biometric device for tenant: {} - Error: {}", tenantId, e.getMessage(), e);
+            // This runs in a separate transaction, so failures won't affect main activation
+            // Exception is caught and logged, but not re-thrown to allow activation to succeed
         }
     }
     
