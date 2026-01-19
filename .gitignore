@@ -56,8 +56,12 @@ Thumbs.db
 .env.*.local
 application-local.properties
 application-local.yml
+application-prod.properties
 *.pem
 *.key
+
+# Docker volumes
+mysql_data/
 
 # Temporary files
 *.tmp

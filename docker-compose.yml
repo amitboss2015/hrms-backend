@@ -1,0 +1,77 @@
+# Docker Compose for ChandraHR HRMS
+# Use this for local development/testing or single-server deployment
+
+version: '3.8'
+
+services:
+  # MySQL Database
+  mysql:
+    image: mysql:8.0
+    container_name: hrms-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+      MYSQL_DATABASE: payroll_hrms
+      MYSQL_USER: hrms_app
+      MYSQL_PASSWORD: ${DB_PASSWORD:-hrmspassword123}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./scripts:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - hrms-network
+
+  # Spring Boot Backend
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hrms-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/payroll_hrms?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: hrms_app
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:-hrmspassword123}
+      JWT_SECRET: ${JWT_SECRET:-your-super-secret-production-key-that-is-at-least-256-bits-long}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://localhost:80,http://localhost:5173}
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./logs:/opt/hrms/logs
+    networks:
+      - hrms-network
+
+  # Nginx + React Frontend
+  frontend:
+    image: nginx:alpine
+    container_name: hrms-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ${FRONTEND_DIST_PATH:-../../../attendance-ui-auth/dist}:/usr/share/nginx/html:ro
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # Uncomment for SSL
+      # - ./nginx/ssl:/etc/nginx/ssl:ro
+    networks:
+      - hrms-network
+
+networks:
+  hrms-network:
+    driver: bridge
+
+volumes:
+  mysql_data:
