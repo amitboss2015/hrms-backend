@@ -5,8 +5,6 @@ import com.example.hrms.admin.domain.TrialTracking.TrialStatus;
 import com.example.hrms.admin.repo.TrialTrackingRepository;
 import com.example.hrms.admin.service.FraudDetectionService;
 import com.example.hrms.admin.service.FraudDetectionService.FraudResult;
-import com.example.hrms.attendance.domain.BiometricDevice;
-import com.example.hrms.attendance.repo.BiometricDeviceRepository;
 import com.example.hrms.auth.domain.User;
 import com.example.hrms.auth.domain.enums.UserRole;
 import com.example.hrms.auth.repo.UserRepository;
@@ -23,7 +21,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
@@ -55,7 +52,7 @@ public class CompanyRegistrationService {
     private final FraudDetectionService fraudDetectionService;
     private final TrialTrackingRepository trialTrackingRepo;
     private final ShiftRepository shiftRepo;
-    private final BiometricDeviceRepository biometricDeviceRepo;
+    private final BiometricDeviceSetupService biometricDeviceSetupService;
 
     /**
      * Register a new company (Step 1: Create pending registration)
@@ -259,12 +256,13 @@ public class CompanyRegistrationService {
         createDefaultShifts(tenantId);
         
         // Create default biometric device for the company
-        // Wrap in try-catch to ensure activation succeeds even if device creation fails
-        try {
-            createDefaultBiometricDevice(tenantId, registration.getCompanyName());
-        } catch (Exception e) {
-            log.error("Device creation failed but activation will continue: {}", e.getMessage());
-            // Don't re-throw - allow activation to succeed
+        // This runs in a SEPARATE transaction via BiometricDeviceSetupService
+        // so failures won't affect the main activation transaction
+        boolean deviceCreated = biometricDeviceSetupService.createDefaultBiometricDevice(
+                tenantId, registration.getCompanyName());
+        if (!deviceCreated) {
+            log.warn("⚠️ Default biometric device creation failed for tenant: {} - " +
+                    "Admin can add devices manually later", tenantId);
         }
         
         // Send welcome email
@@ -454,39 +452,6 @@ public class CompanyRegistrationService {
         }
     }
     
-    /**
-     * Create a default biometric device for the new company.
-     * This simplifies setup - all employees will be assigned to this device by default.
-     * Uses REQUIRES_NEW propagation so failures don't affect the main activation transaction.
-     */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    private void createDefaultBiometricDevice(String tenantId, String companyName) {
-        try {
-            // Check if default device already exists for this tenant
-            boolean exists = biometricDeviceRepo.existsByTenantIdAndDeviceCode(tenantId, "DEFAULT");
-            if (exists) {
-                log.info("⚠️ Default biometric device already exists for tenant: {}", tenantId);
-                return;
-            }
-            
-            BiometricDevice defaultDevice = BiometricDevice.builder()
-                    .tenantId(tenantId)
-                    .deviceCode("DEFAULT")
-                    .deviceName("Main Attendance Device")
-                    .location("Main Office")
-                    .isActive(true)
-                    .isDefault(true)
-                    .build();
-            
-            biometricDeviceRepo.save(defaultDevice);
-            log.info("✅ Default biometric device created for tenant: {}", tenantId);
-            
-        } catch (Exception e) {
-            log.error("Failed to create default biometric device for tenant: {} - Error: {}", tenantId, e.getMessage(), e);
-            // This runs in a separate transaction, so failures won't affect main activation
-            // Exception is caught and logged, but not re-thrown to allow activation to succeed
-        }
-    }
     
     /**
      * Normalize email address to handle Gmail dot trick and other variations.
