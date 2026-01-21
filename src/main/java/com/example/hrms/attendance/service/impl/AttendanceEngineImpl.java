@@ -21,8 +21,7 @@ import com.example.hrms.domain.enums.PatternType;
 import com.example.hrms.domain.enums.RoundingRule;
 import com.example.hrms.repo.EmployeeRepository;
 import com.example.hrms.repo.EmployeeShiftAssignmentRepository;
-import com.example.hrms.repo.HolidayRepository;
-import com.example.hrms.repo.WeeklyOffConfigRepository;
+import com.example.hrms.service.ConfigCacheService;
 import com.example.hrms.payroll.domain.SalaryOvertimeConfig;
 import com.example.hrms.payroll.service.SalaryOvertimeConfigService;
 import com.example.hrms.leave.repo.EmployeeLeaveRepository;
@@ -53,8 +52,7 @@ public class AttendanceEngineImpl implements AttendanceEngine {
     private final OvertimeAllowanceRepository otRepo;
     private final EmployeeShiftAssignmentRepository empShiftRepo;
     private final EmployeeRepository employeeRepo;
-    private final WeeklyOffConfigRepository weeklyOffConfigRepo;
-    private final HolidayRepository holidayRepo;
+    private final ConfigCacheService configCacheService;
     private final SalaryOvertimeConfigService configService;
     private final EmployeeLeaveRepository leaveRepo;
 
@@ -182,8 +180,8 @@ public class AttendanceEngineImpl implements AttendanceEngine {
             }
         }
         
-        // Pre-fetch holidays for the month
-        List<Holiday> holidays = holidayRepo.findByOrgIdAndHolidayDateBetweenAndActiveTrue("ORG001", startDate, endDate);
+        // Pre-fetch holidays for the month (CACHED)
+        List<Holiday> holidays = configCacheService.getActiveHolidaysInRange(tenantId, startDate, endDate);
         Set<LocalDate> holidayDates = new HashSet<>();
         Map<LocalDate, String> holidayNames = new HashMap<>();
         for (Holiday h : holidays) {
@@ -437,9 +435,10 @@ public class AttendanceEngineImpl implements AttendanceEngine {
             return empWeeklyOff.contains(dayOfWeek.name());
         }
         
-        // Check org-level weekly off config
-        Optional<WeeklyOffConfig> config = weeklyOffConfigRepo.findByOrgIdAndEmploymentTypeAndActiveTrue(
-                "ORG001", employee.getEmploymentType() != null ? employee.getEmploymentType() : EmploymentType.FULL_TIME);
+        // Check org-level weekly off config (CACHED)
+        String tenantId = employee.getTenantId() != null ? employee.getTenantId() : TenantContext.getTenantId();
+        Optional<WeeklyOffConfig> config = configCacheService.getWeeklyOffConfig(
+                tenantId, employee.getEmploymentType() != null ? employee.getEmploymentType() : EmploymentType.FULL_TIME);
         
         if (config.isPresent()) {
             if (config.get().isWeeklyOff(dayOfWeek)) {
@@ -1183,11 +1182,10 @@ public class AttendanceEngineImpl implements AttendanceEngine {
                 info.isWeeklyOff = true;
             }
         } else {
-            // 2. Check organization-level weekly off config
-            // Note: org_id in weekly_off_config is a string like "ORG001"
-            String orgIdStr = "ORG001"; // Default org ID for this installation
+            // 2. Check organization-level weekly off config (CACHED)
+            String tenantId = employee.getTenantId() != null ? employee.getTenantId() : TenantContext.getTenantId();
             Optional<WeeklyOffConfig> weeklyOffConfig = 
-                weeklyOffConfigRepo.findByOrgIdAndEmploymentTypeAndActiveTrue(orgIdStr, empType);
+                configCacheService.getWeeklyOffConfig(tenantId, empType);
             
             if (weeklyOffConfig.isPresent()) {
                 WeeklyOffConfig config = weeklyOffConfig.get();
@@ -1217,10 +1215,9 @@ public class AttendanceEngineImpl implements AttendanceEngine {
             }
         }
         
-        // 3. Check calendar holidays
-        // Note: org_id in holidays table is a string like "ORG001"
-        List<Holiday> holidays = holidayRepo.findByOrgIdAndHolidayDateBetweenAndActiveTrue(
-            "ORG001", date, date);
+        // 3. Check calendar holidays (CACHED)
+        String tenantId = employee.getTenantId() != null ? employee.getTenantId() : TenantContext.getTenantId();
+        List<Holiday> holidays = configCacheService.getActiveHolidaysInRange(tenantId, date, date);
         
         for (Holiday h : holidays) {
             // Check if this holiday applies to the employee's employment type
