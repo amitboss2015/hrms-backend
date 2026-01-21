@@ -60,6 +60,22 @@ public class Loan {
     // Outstanding balance is tracked, admin decides how much to deduct
     @Column(nullable = false)
     private Boolean isFlexibleDeduction = false;
+    
+    // ========== PAYROLL ASSOCIATION FOR ONE-TIME LOANS ==========
+    // Tracks which payroll this one-time loan was deducted in
+    // When payroll is deleted, this should be cleared to allow re-deduction
+    @Column(name = "deducted_in_payroll_id")
+    private Long deductedInPayrollId;
+    
+    @Column(name = "deducted_in_month")
+    private Integer deductedInMonth;
+    
+    @Column(name = "deducted_in_year")
+    private Integer deductedInYear;
+    
+    // Store the amount deducted (for flexible loans where we deduct outstanding balance)
+    @Column(name = "deducted_amount", precision = 12, scale = 2)
+    private BigDecimal deductedAmount;
 
     @Column(nullable = false)
     private LocalDate sanctionDate;
@@ -146,4 +162,53 @@ public class Loan {
     public void setRemarks(String remarks) { this.remarks = remarks; }
     public LocalDate getClosedDate() { return closedDate; }
     public void setClosedDate(LocalDate closedDate) { this.closedDate = closedDate; }
+    
+    // Payroll association getters/setters
+    public Long getDeductedInPayrollId() { return deductedInPayrollId; }
+    public void setDeductedInPayrollId(Long deductedInPayrollId) { this.deductedInPayrollId = deductedInPayrollId; }
+    
+    public Integer getDeductedInMonth() { return deductedInMonth; }
+    public void setDeductedInMonth(Integer deductedInMonth) { this.deductedInMonth = deductedInMonth; }
+    
+    public Integer getDeductedInYear() { return deductedInYear; }
+    public void setDeductedInYear(Integer deductedInYear) { this.deductedInYear = deductedInYear; }
+    
+    public BigDecimal getDeductedAmount() { return deductedAmount; }
+    public void setDeductedAmount(BigDecimal deductedAmount) { this.deductedAmount = deductedAmount; }
+    
+    /**
+     * Check if this one-time/flexible loan has already been deducted in a payroll
+     */
+    public boolean isAlreadyDeducted() {
+        return deductedInPayrollId != null;
+    }
+    
+    /**
+     * Mark this loan as deducted in the given payroll
+     */
+    public void markAsDeducted(Long payrollId, Integer month, Integer year) {
+        this.deductedInPayrollId = payrollId;
+        this.deductedInMonth = month;
+        this.deductedInYear = year;
+    }
+    
+    /**
+     * Mark as deducted with amount (for flexible loans)
+     */
+    public void markAsDeducted(Long payrollId, Integer month, Integer year, BigDecimal amount) {
+        this.deductedInPayrollId = payrollId;
+        this.deductedInMonth = month;
+        this.deductedInYear = year;
+        this.deductedAmount = amount;
+    }
+    
+    /**
+     * Clear deduction association (when payroll is deleted)
+     */
+    public void clearDeductionAssociation() {
+        this.deductedInPayrollId = null;
+        this.deductedInMonth = null;
+        this.deductedInYear = null;
+        this.deductedAmount = null;
+    }
 }

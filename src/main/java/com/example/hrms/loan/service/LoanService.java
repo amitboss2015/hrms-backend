@@ -155,12 +155,128 @@ public class LoanService {
     }
 
     /**
-     * Get total monthly EMI deduction for an employee
-     * Only includes fixed EMI loans, not flexible loans
+     * Get total monthly EMI/loan deduction for an employee
+     * Includes:
+     * - Regular EMI loans (fixed monthly deductions)
+     * - Pending one-time loans (not yet deducted)
+     * - Flexible loans (outstanding balance - auto-included for payroll)
+     * Excludes:
+     * - One-time loans already deducted in a previous payroll
      */
     public BigDecimal getMonthlyEmiDeduction(String orgId, String empId) {
-        BigDecimal total = loanRepo.sumActiveEmiByEmployee(orgId, empId);
-        return total != null ? total : BigDecimal.ZERO;
+        // Regular EMI loans (excluding one-time and flexible)
+        BigDecimal regularEmi = loanRepo.sumActiveEmiByEmployee(orgId, empId);
+        if (regularEmi == null) regularEmi = BigDecimal.ZERO;
+        
+        // Pending one-time loans (not yet deducted in any payroll)
+        BigDecimal oneTimeAmount = loanRepo.sumPendingOneTimeLoans(orgId, empId);
+        if (oneTimeAmount == null) oneTimeAmount = BigDecimal.ZERO;
+        
+        // Flexible loans - include outstanding balance (auto-deduct full outstanding)
+        BigDecimal flexibleOutstanding = getFlexibleLoanOutstanding(orgId, empId);
+        if (flexibleOutstanding == null) flexibleOutstanding = BigDecimal.ZERO;
+        
+        return regularEmi.add(oneTimeAmount).add(flexibleOutstanding);
+    }
+    
+    /**
+     * Get pending one-time loans for an employee (not yet deducted)
+     */
+    public List<Loan> getPendingOneTimeLoans(String tenantId, String empId) {
+        return loanRepo.findPendingOneTimeLoans(tenantId, empId);
+    }
+    
+    /**
+     * Mark one-time and flexible loans as deducted in a payroll
+     */
+    @Transactional
+    public void markOneTimeLoansAsDeducted(String tenantId, String empId, Long payrollId, Integer month, Integer year) {
+        // Mark one-time loans as deducted
+        List<Loan> pendingOneTimeLoans = loanRepo.findPendingOneTimeLoans(tenantId, empId);
+        for (Loan loan : pendingOneTimeLoans) {
+            loan.markAsDeducted(payrollId, month, year);
+            // Also update total paid and outstanding balance
+            loan.setTotalPaid(loan.getTotalPaid().add(loan.getEmiAmount()));
+            loan.setOutstandingBalance(loan.getOutstandingBalance().subtract(loan.getEmiAmount()));
+            loan.setEmisPaid(1);
+            // Close the loan since it's fully paid
+            if (loan.getOutstandingBalance().compareTo(BigDecimal.ZERO) <= 0) {
+                loan.setStatus(LoanStatus.CLOSED);
+                loan.setClosedDate(java.time.LocalDate.now());
+            }
+            loanRepo.save(loan);
+        }
+        
+        // Mark flexible loans as deducted (full outstanding balance)
+        List<Loan> flexibleLoans = loanRepo.findActiveFlexibleLoans(tenantId, empId);
+        for (Loan loan : flexibleLoans) {
+            BigDecimal deductionAmount = loan.getOutstandingBalance();
+            loan.markAsDeducted(payrollId, month, year, deductionAmount); // Store amount for reversal
+            loan.setTotalPaid(loan.getTotalPaid().add(deductionAmount));
+            loan.setOutstandingBalance(BigDecimal.ZERO);
+            loan.setStatus(LoanStatus.CLOSED);
+            loan.setClosedDate(java.time.LocalDate.now());
+            loanRepo.save(loan);
+        }
+    }
+    
+    /**
+     * Clear loan deduction associations when payroll is deleted
+     * This makes the loans available for re-deduction in future payrolls
+     * Handles both one-time and flexible loans
+     */
+    @Transactional
+    public void clearOneTimeLoanAssociations(Long payrollId) {
+        List<Loan> loans = loanRepo.findByDeductedInPayrollId(payrollId);
+        for (Loan loan : loans) {
+            // Determine the amount to reverse
+            BigDecimal amountToReverse;
+            if (loan.getDeductedAmount() != null) {
+                // Flexible loan - use stored deducted amount
+                amountToReverse = loan.getDeductedAmount();
+            } else {
+                // One-time loan - use EMI amount
+                amountToReverse = loan.getEmiAmount();
+            }
+            
+            // Reverse the deduction
+            loan.setTotalPaid(loan.getTotalPaid().subtract(amountToReverse));
+            loan.setOutstandingBalance(loan.getOutstandingBalance().add(amountToReverse));
+            loan.setEmisPaid(0);
+            loan.setStatus(LoanStatus.ACTIVE);
+            loan.setClosedDate(null);
+            loan.clearDeductionAssociation();
+            loanRepo.save(loan);
+        }
+    }
+    
+    /**
+     * Clear all loan associations for a month/year (when bulk deleting payroll)
+     * Handles both one-time and flexible loans
+     */
+    @Transactional
+    public void clearOneTimeLoanAssociationsForMonth(String tenantId, Integer month, Integer year) {
+        List<Loan> loans = loanRepo.findByDeductedInMonthYear(tenantId, month, year);
+        for (Loan loan : loans) {
+            // Determine the amount to reverse
+            BigDecimal amountToReverse;
+            if (loan.getDeductedAmount() != null) {
+                // Flexible loan - use stored deducted amount
+                amountToReverse = loan.getDeductedAmount();
+            } else {
+                // One-time loan - use EMI amount
+                amountToReverse = loan.getEmiAmount();
+            }
+            
+            // Reverse the deduction
+            loan.setTotalPaid(loan.getTotalPaid().subtract(amountToReverse));
+            loan.setOutstandingBalance(loan.getOutstandingBalance().add(amountToReverse));
+            loan.setEmisPaid(0);
+            loan.setStatus(LoanStatus.ACTIVE);
+            loan.setClosedDate(null);
+            loan.clearDeductionAssociation();
+            loanRepo.save(loan);
+        }
     }
 
     /**
