@@ -70,7 +70,7 @@ public class DataResetService {
 
         try {
             // Convert tenantId to orgId for entities that use orgId
-            Long orgId = parseOrgId(tenantId);
+            Long orgId = resolveOrgId(tenantId);
             
             // 1. Delete payroll for the month
             int payrollDeleted = payrollRepo.deleteByTenantIdAndYearAndMonth(tenantId, year, month);
@@ -121,25 +121,39 @@ public class DataResetService {
     }
     
     /**
-     * Parse orgId from tenantId.
-     * TenantId format is typically "org_123" or just "123"
+     * Resolve orgId from tenantId.
+     * First tries to parse directly as a number, then looks up from existing attendance data.
+     * This handles both numeric tenantIds (e.g., "123") and string-based ones (e.g., "PASA").
      */
-    private Long parseOrgId(String tenantId) {
+    private Long resolveOrgId(String tenantId) {
         if (tenantId == null) return null;
+        
+        // Try parsing directly as number
         try {
-            // Try parsing directly as number
             return Long.parseLong(tenantId);
         } catch (NumberFormatException e) {
-            // Try extracting number from "org_123" format
-            if (tenantId.startsWith("org_")) {
-                try {
-                    return Long.parseLong(tenantId.substring(4));
-                } catch (NumberFormatException e2) {
-                    return null;
-                }
-            }
-            return null;
+            // Not a number - look up from attendance_day table
         }
+        
+        // Try extracting number from "org_123" format
+        if (tenantId.startsWith("org_")) {
+            try {
+                return Long.parseLong(tenantId.substring(4));
+            } catch (NumberFormatException e) {
+                // Not in org_123 format
+            }
+        }
+        
+        // Look up orgId from existing attendance data for this tenant
+        var orgIds = attendanceDayRepo.findDistinctOrgIdByTenantId(tenantId);
+        if (!orgIds.isEmpty()) {
+            Long orgId = orgIds.get(0);
+            log.info("Resolved orgId={} from tenantId={}", orgId, tenantId);
+            return orgId;
+        }
+        
+        log.warn("Could not resolve orgId for tenantId={}", tenantId);
+        return null;
     }
 
     /**

@@ -101,4 +101,11 @@ public interface AttendanceDayRepository extends JpaRepository<AttendanceDay, Lo
     void deleteByEmployeeIdInAndWorkDateBetween(@Param("employeeIds") List<Long> employeeIds,
                                                  @Param("fromDate") LocalDate fromDate,
                                                  @Param("toDate") LocalDate toDate);
+    
+    /**
+     * Find the orgId associated with a tenantId.
+     * Used for cross-referencing between tenant-aware and org-aware entities.
+     */
+    @Query("SELECT DISTINCT d.orgId FROM AttendanceDay d WHERE d.tenantId = :tenantId AND d.orgId IS NOT NULL")
+    List<Long> findDistinctOrgIdByTenantId(@Param("tenantId") String tenantId);
 }
