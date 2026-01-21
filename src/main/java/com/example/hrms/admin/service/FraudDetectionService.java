@@ -5,6 +5,7 @@ import com.example.hrms.admin.repo.RegistrationAttemptRepository;
 import com.example.hrms.admin.repo.TrialTrackingRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -20,6 +21,9 @@ public class FraudDetectionService {
 
     private final RegistrationAttemptRepository attemptRepo;
     private final TrialTrackingRepository trialRepo;
+    
+    @Value("${app.fraud-detection.enabled:true}")
+    private boolean fraudDetectionEnabled;
 
     // Blocked disposable email domains
     private static final Set<String> DISPOSABLE_EMAIL_DOMAINS = Set.of(
@@ -65,6 +69,12 @@ public class FraudDetectionService {
      */
     public FraudResult calculateFraudScore(String email, String companyName, 
             String phone, String ipAddress, String userAgent) {
+        
+        // If fraud detection is disabled (dev mode), allow all registrations
+        if (!fraudDetectionEnabled) {
+            log.info("Fraud detection DISABLED - allowing registration for {}", email);
+            return new FraudResult(0, "DISABLED", false, List.of("Fraud detection disabled"));
+        }
         
         int score = 0;
         List<String> reasons = new ArrayList<>();
