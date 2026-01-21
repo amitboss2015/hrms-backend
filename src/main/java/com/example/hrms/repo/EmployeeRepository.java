@@ -44,6 +44,11 @@ public interface EmployeeRepository extends JpaRepository<Employee, Long> {
     List<Employee> findByTenantIdAndStatus(String tenantId, EmployeeStatus status);
     
     /**
+     * Find all active employees for a tenant, ordered by emp code
+     */
+    List<Employee> findByTenantIdAndStatusOrderByEmpCodeAsc(String tenantId, EmployeeStatus status);
+    
+    /**
      * Find employee by ID and tenant (security check)
      */
     Optional<Employee> findByIdAndTenantId(Long id, String tenantId);

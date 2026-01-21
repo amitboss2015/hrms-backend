@@ -45,6 +45,10 @@ public class EmployeeDTO {
     @Digits(integer = 10, fraction = 2, message = "Base salary must be a valid amount with up to 2 decimal places")
     private BigDecimal baseSalary;
 
+    @DecimalMin(value = "0.0", message = "Increment cannot be negative")
+    @Digits(integer = 10, fraction = 2, message = "Increment must be a valid amount with up to 2 decimal places")
+    private BigDecimal increment;
+
     @DecimalMin(value = "0.0", message = "Hourly rate cannot be negative")
     @Digits(integer = 6, fraction = 2, message = "Hourly rate must be a valid amount with up to 2 decimal places")
     private BigDecimal hourlyRate;
@@ -162,6 +166,7 @@ public class EmployeeDTO {
         dto.setEmploymentType(e.getEmploymentType());
         dto.setSalaryBasis(e.getSalaryBasis());
         dto.setBaseSalary(e.getBaseSalary());
+        dto.setIncrement(e.getIncrement());
         dto.setHourlyRate(e.getHourlyRate());
         dto.setJoinDate(e.getJoinDate());
         dto.setStatus(e.getStatus());
@@ -219,6 +224,7 @@ public class EmployeeDTO {
         e.setEmploymentType(this.employmentType != null ? this.employmentType : EmploymentType.FULL_TIME);
         e.setSalaryBasis(this.salaryBasis != null ? this.salaryBasis : SalaryBasis.MONTHLY);
         e.setBaseSalary(this.baseSalary);
+        e.setIncrement(this.increment);
         e.setHourlyRate(this.hourlyRate);
         e.setJoinDate(this.joinDate);
         e.setStatus(this.status != null ? this.status : EmployeeStatus.ACTIVE);
@@ -294,6 +300,9 @@ public class EmployeeDTO {
     
     public BigDecimal getBaseSalary() { return baseSalary; }
     public void setBaseSalary(BigDecimal baseSalary) { this.baseSalary = baseSalary; }
+    
+    public BigDecimal getIncrement() { return increment; }
+    public void setIncrement(BigDecimal increment) { this.increment = increment; }
     
     public BigDecimal getHourlyRate() { return hourlyRate; }
     public void setHourlyRate(BigDecimal hourlyRate) { this.hourlyRate = hourlyRate; }

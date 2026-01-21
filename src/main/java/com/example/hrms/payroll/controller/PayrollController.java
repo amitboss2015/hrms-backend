@@ -9,6 +9,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -96,6 +97,49 @@ public class PayrollController {
         }
         
         return ResponseEntity.ok(payrollService.generatePayroll(resolvedOrgId, empId, year, month));
+    }
+
+    /**
+     * Recalculate payroll for a single employee (delete existing and regenerate)
+     * This is useful when employee data (salary, shift, etc.) has changed
+     */
+    @PostMapping("/recalculate/{empId}")
+    public ResponseEntity<?> recalculateEmployeePayroll(
+            @RequestParam(required = false) String orgId,
+            @PathVariable String empId,
+            @RequestParam Integer year,
+            @RequestParam Integer month) {
+        
+        String resolvedOrgId = resolveOrgId(orgId);
+        log.info("Recalculating payroll for employee={}, org={}, year={}, month={}", 
+                empId, resolvedOrgId, year, month);
+        
+        try {
+            // Delete existing payroll for this employee (if any)
+            payrollService.deleteEmployeePayroll(resolvedOrgId, empId, year, month);
+            
+            // Check if attendance is available
+            Map<String, Object> attendanceCheck = payrollService.checkEmployeeAttendance(resolvedOrgId, empId, year, month);
+            if (!(Boolean) attendanceCheck.get("available")) {
+                return ResponseEntity.badRequest().body(attendanceCheck);
+            }
+            
+            // Generate fresh payroll
+            Payroll payroll = payrollService.generatePayroll(resolvedOrgId, empId, year, month);
+            
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", true);
+            response.put("message", "Payroll recalculated successfully");
+            response.put("payroll", payroll);
+            return ResponseEntity.ok(response);
+            
+        } catch (Exception e) {
+            log.error("Error recalculating payroll: {}", e.getMessage(), e);
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", false);
+            response.put("error", e.getMessage());
+            return ResponseEntity.badRequest().body(response);
+        }
     }
 
     // ============ RETRIEVAL ============
@@ -363,15 +407,25 @@ public class PayrollController {
      * Delete all payrolls for a month (only if all are DRAFT)
      */
     @DeleteMapping
-    public ResponseEntity<Void> deleteMonthlyPayroll(
+    public ResponseEntity<Map<String, Object>> deleteMonthlyPayroll(
             @RequestParam(required = false) String orgId,
             @RequestParam Integer year,
             @RequestParam Integer month) {
+        String resolvedOrgId = resolveOrgId(orgId);
+        log.info("🗑️ Delete request for payroll: orgId={}, year={}, month={}", resolvedOrgId, year, month);
         try {
-            payrollService.deleteMonthlyPayroll(resolveOrgId(orgId), year, month);
-            return ResponseEntity.ok().build();
+            int deletedCount = payrollService.deleteMonthlyPayroll(resolvedOrgId, year, month);
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", true);
+            response.put("deleted", deletedCount);
+            response.put("message", deletedCount + " payroll record(s) deleted");
+            return ResponseEntity.ok(response);
         } catch (IllegalStateException e) {
-            return ResponseEntity.badRequest().build();
+            log.warn("⚠️ Cannot delete payrolls: {}", e.getMessage());
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", false);
+            response.put("error", e.getMessage());
+            return ResponseEntity.badRequest().body(response);
         }
     }
 

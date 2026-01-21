@@ -79,4 +79,21 @@ public interface PayrollRepository extends JpaRepository<Payroll, Long> {
     default List<Payroll> findByOrgIdAndYearOrderByMonthDescEmpIdAsc(String orgId, Integer year) {
         return findByTenantIdAndYearOrderByMonthDescEmpIdAsc(orgId, year);
     }
+    
+    // ============ DELETE METHODS ============
+    
+    /**
+     * Delete payroll by tenant, year and month
+     */
+    @org.springframework.data.jpa.repository.Modifying
+    @Query("DELETE FROM Payroll p WHERE p.tenantId = :tenantId AND p.year = :year AND p.month = :month")
+    int deleteByTenantIdAndYearAndMonth(
+            @Param("tenantId") String tenantId, 
+            @Param("year") Integer year, 
+            @Param("month") Integer month);
+    
+    /**
+     * Count payroll records by org, year and month
+     */
+    long countByOrgIdAndYearAndMonth(String orgId, Integer year, Integer month);
 }

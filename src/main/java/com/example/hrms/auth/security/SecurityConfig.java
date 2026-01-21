@@ -78,6 +78,9 @@ public class SecurityConfig {
                 // Tenant management - SUPER_ADMIN only
                 .requestMatchers("/api/tenants/**").hasRole("SUPER_ADMIN")
                 
+                // Data Management - ADMIN and SUPER_ADMIN
+                .requestMatchers("/api/admin/data/**").hasAnyRole("SUPER_ADMIN", "ADMIN")
+                
                 // Admin Dashboard - SUPER_ADMIN only
                 .requestMatchers("/api/admin/**").hasRole("SUPER_ADMIN")
                 
