@@ -100,4 +100,26 @@ public class AttendanceDay implements Serializable {
     
     // Overtime minutes worked on holiday/weekly off
     private Integer overtimeOnHolidayMins;
+    
+    // ========= LATE/EARLY APPROVAL FIELDS =========
+    // If approved, late mark won't count in payroll calculations
+    
+    // Late arrival approval - if true, late time is waived/excused
+    @Builder.Default
+    private Boolean lateApproved = false;
+    
+    // Early out approval - if true, early departure is waived/excused
+    @Builder.Default
+    private Boolean earlyOutApproved = false;
+    
+    // Who approved the late/early
+    @Column(length = 64)
+    private String approvedBy;
+    
+    // When the approval was granted
+    private LocalDateTime approvedAt;
+    
+    // Reason for approval (e.g., "Doctor's appointment", "Client meeting", "Manager approval")
+    @Column(length = 256)
+    private String approvalRemarks;
 }

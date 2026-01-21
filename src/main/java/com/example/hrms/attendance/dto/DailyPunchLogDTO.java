@@ -41,12 +41,19 @@ public class DailyPunchLogDTO {
     private int overtimeOnHolidayMins; // Overtime minutes worked on holiday/weekly off
     
     // Late/Early tracking with rounding
-    private boolean isLateIn;          // True if arrived late (after shift start + grace)
-    private boolean isEarlyOut;        // True if left early (before shift end - grace)
+    private boolean lateIn;            // True if arrived late (after shift start + grace)
+    private boolean earlyOut;          // True if left early (before shift end - grace)
     private int lateByMins;            // Minutes late (after rounding)
     private int earlyByMins;           // Minutes early (after rounding)
     private String roundedIn;          // Effective IN time after rounding (HH:mm)
     private String roundedOut;         // Effective OUT time after rounding (HH:mm)
     private String shiftStartTime;     // Shift start time for reference (HH:mm)
     private String shiftEndTime;       // Shift end time for reference (HH:mm)
+    
+    // Late/Early approval fields - if approved, late/early won't count in payroll
+    private boolean lateApproved;      // True if late arrival is approved/excused
+    private boolean earlyOutApproved;  // True if early departure is approved/excused
+    private String approvedBy;         // Who approved the late/early
+    private String approvedAt;         // When approval was granted (datetime string)
+    private String approvalRemarks;    // Reason for approval
 }

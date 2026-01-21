@@ -187,10 +187,19 @@ public class AttendanceQueryServiceImpl implements AttendanceQueryService {
                 }
                 
                 // Late/Early tracking with rounding
-                builder.isLateIn(Boolean.TRUE.equals(dayRecord.getIsLateIn()));
-                builder.isEarlyOut(Boolean.TRUE.equals(dayRecord.getIsEarlyOut()));
+                builder.lateIn(Boolean.TRUE.equals(dayRecord.getIsLateIn()));
+                builder.earlyOut(Boolean.TRUE.equals(dayRecord.getIsEarlyOut()));
                 builder.lateByMins(dayRecord.getLateByMins() != null ? dayRecord.getLateByMins() : 0);
                 builder.earlyByMins(dayRecord.getEarlyByMins() != null ? dayRecord.getEarlyByMins() : 0);
+                
+                // Late/Early approval status
+                builder.lateApproved(Boolean.TRUE.equals(dayRecord.getLateApproved()));
+                builder.earlyOutApproved(Boolean.TRUE.equals(dayRecord.getEarlyOutApproved()));
+                builder.approvedBy(dayRecord.getApprovedBy());
+                if (dayRecord.getApprovedAt() != null) {
+                    builder.approvedAt(dayRecord.getApprovedAt().toString());
+                }
+                builder.approvalRemarks(dayRecord.getApprovalRemarks());
                 
                 if (dayRecord.getRoundedIn() != null) {
                     builder.roundedIn(dayRecord.getRoundedIn().toLocalTime().format(TIME_FMT));
@@ -212,16 +221,25 @@ public class AttendanceQueryServiceImpl implements AttendanceQueryService {
                         });
                 }
                 
-                // Update highlight reason to include late/early
+                // Update highlight reason to include late/early and approval status
                 String hlReason = null;
+                boolean lateApproved = Boolean.TRUE.equals(dayRecord.getLateApproved());
+                boolean earlyApproved = Boolean.TRUE.equals(dayRecord.getEarlyOutApproved());
+                
                 if (Boolean.TRUE.equals(dayRecord.getIsOvertimeDay())) {
                     hlReason = "OT on " + (Boolean.TRUE.equals(dayRecord.getIsHoliday()) ? "Holiday" : "Weekly Off");
                 } else if (Boolean.TRUE.equals(dayRecord.getIsLateIn()) && Boolean.TRUE.equals(dayRecord.getIsEarlyOut())) {
-                    hlReason = "Late IN +" + dayRecord.getLateByMins() + "m & Early OUT +" + dayRecord.getEarlyByMins() + "m";
+                    String lateText = lateApproved ? "Late ✓" : "Late IN +" + dayRecord.getLateByMins() + "m";
+                    String earlyText = earlyApproved ? "Early ✓" : "Early OUT +" + dayRecord.getEarlyByMins() + "m";
+                    hlReason = lateText + " & " + earlyText;
                 } else if (Boolean.TRUE.equals(dayRecord.getIsLateIn())) {
-                    hlReason = "Late IN +" + dayRecord.getLateByMins() + "min";
+                    hlReason = lateApproved 
+                        ? "Late ✓ Approved" 
+                        : "Late IN +" + dayRecord.getLateByMins() + "min";
                 } else if (Boolean.TRUE.equals(dayRecord.getIsEarlyOut())) {
-                    hlReason = "Early OUT +" + dayRecord.getEarlyByMins() + "min";
+                    hlReason = earlyApproved 
+                        ? "Early ✓ Approved" 
+                        : "Early OUT +" + dayRecord.getEarlyByMins() + "min";
                 } else if (Boolean.TRUE.equals(dayRecord.getMissingPunch())) {
                     hlReason = "Missing " + (dayRecord.getMissingPunchType() != null ? dayRecord.getMissingPunchType() : "punch");
                 } else if (Boolean.TRUE.equals(dayRecord.getDualShift())) {
