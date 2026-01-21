@@ -12,8 +12,7 @@ import com.example.hrms.payroll.domain.enums.PaymentMode;
 import com.example.hrms.payroll.domain.enums.PayrollStatus;
 import com.example.hrms.payroll.repo.PayrollRepository;
 import com.example.hrms.repo.EmployeeRepository;
-import com.example.hrms.repo.HolidayRepository;
-import com.example.hrms.repo.WeeklyOffConfigRepository;
+import com.example.hrms.service.ConfigCacheService;
 import com.example.hrms.tenant.TenantContext;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -51,8 +50,7 @@ public class PayrollService {
     private final PayrollRepository payrollRepo;
     private final EmployeeRepository employeeRepo;
     private final AttendanceDayRepository attendanceDayRepo;
-    private final HolidayRepository holidayRepo;
-    private final WeeklyOffConfigRepository weeklyOffRepo;
+    private final ConfigCacheService configCacheService;
     private final LoanService loanService;
     private final SalaryOvertimeConfigService configService;
 
@@ -63,15 +61,13 @@ public class PayrollService {
     public PayrollService(PayrollRepository payrollRepo,
                           EmployeeRepository employeeRepo,
                           AttendanceDayRepository attendanceDayRepo,
-                          HolidayRepository holidayRepo,
-                          WeeklyOffConfigRepository weeklyOffRepo,
+                          ConfigCacheService configCacheService,
                           LoanService loanService,
                           SalaryOvertimeConfigService configService) {
         this.payrollRepo = payrollRepo;
         this.employeeRepo = employeeRepo;
         this.attendanceDayRepo = attendanceDayRepo;
-        this.holidayRepo = holidayRepo;
-        this.weeklyOffRepo = weeklyOffRepo;
+        this.configCacheService = configCacheService;
         this.loanService = loanService;
         this.configService = configService;
     }
@@ -148,8 +144,8 @@ public class PayrollService {
         LocalDate startDate = ym.atDay(1);
         LocalDate endDate = ym.atEndOfMonth();
 
-        // Get holidays for the month
-        List<Holiday> holidays = holidayRepo.findByOrgIdAndHolidayDateBetweenAndActiveTrue(
+        // Get holidays for the month (CACHED - avoids repeated queries)
+        List<Holiday> holidays = configCacheService.getActiveHolidaysInRange(
                 payroll.getOrgId(), startDate, endDate);
         Set<LocalDate> holidayDates = new HashSet<>();
         for (Holiday h : holidays) {
@@ -482,10 +478,10 @@ public class PayrollService {
             }
         }
         
-        // If no employee-level, check org-level
+        // If no employee-level, check org-level (CACHED - avoids N+1 queries)
         if (weeklyOffDays.isEmpty()) {
-            WeeklyOffConfig weeklyOff = weeklyOffRepo.findByOrgIdAndEmploymentTypeAndActiveTrue(
-                    orgId, emp.getEmploymentType()).orElse(null);
+            WeeklyOffConfig weeklyOff = configCacheService.getWeeklyOffConfig(orgId, emp.getEmploymentType())
+                    .orElse(null);
             if (weeklyOff != null && weeklyOff.getWeeklyOffDays() != null) {
                 for (String day : weeklyOff.getWeeklyOffDays().split(",")) {
                     try {
