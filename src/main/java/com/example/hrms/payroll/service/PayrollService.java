@@ -174,6 +174,7 @@ public class PayrollService {
         int lateDays = 0;
         int overtimeDays = 0;
         int paidLeaveDays = 0;  // Count paid leave days
+        int totalLateMinutes = 0;  // Total late minutes for late hour charges
         BigDecimal totalOvertimeHours = BigDecimal.ZERO;
         
         // Check if employee is eligible for OT
@@ -225,6 +226,7 @@ public class PayrollService {
                         if (ad.getLateByMins() != null && ad.getLateByMins() > 0 
                                 && !Boolean.TRUE.equals(ad.getLateApproved())) {
                             lateDays++;
+                            totalLateMinutes += ad.getLateByMins();
                         }
                         
                         // Check for OT on working day (only if employee is OT allowed)
@@ -273,6 +275,11 @@ public class PayrollService {
         payroll.setOvertimeHours(totalOvertimeHours);
         payroll.setPaidLeaveDays(paidLeaveDays);
         payroll.setUnpaidLeaveDays(0);
+        
+        // Set total late hours (convert minutes to hours with 2 decimal places)
+        BigDecimal totalLateHours = BigDecimal.valueOf(totalLateMinutes)
+                .divide(BigDecimal.valueOf(60), 2, RoundingMode.HALF_UP);
+        payroll.setTotalLateHours(totalLateHours);
     }
 
     /**
@@ -301,29 +308,28 @@ public class PayrollService {
 
         // Total effective present days for salary calculation:
         // - Present days count as 1
-        // - Half days count as 0.5 (so we use decimal calculation)
+        // - Half days count as 1 (full day counted, late hours deducted separately)
         // - Paid leave days count as 1 (full day)
-        // Formula matches Excel: Present + (HalfDays * 0.5) + PaidLeave
-        double effectivePresentDaysDecimal = presentDays + (halfDays * 0.5) + paidLeaveDays;
+        // Late hours are tracked separately and deducted as "Late Hour Charges"
+        int effectivePresentDays = presentDays + halfDays + paidLeaveDays;
         
         // WORKING DAY AMOUNT calculation based on Excel formula:
         // If employee worked >= threshold days, they get FULL salary
         // Otherwise: Working Day Amount = Final Payment * Present Days / Threshold Days
         BigDecimal workingDayAmount;
-        if (thresholdEnabled && effectivePresentDaysDecimal >= fullMonthThreshold) {
+        if (thresholdEnabled && effectivePresentDays >= fullMonthThreshold) {
             // Employee qualifies for full month salary
             workingDayAmount = finalPayment;
             log.debug("Employee {} qualified for full salary: {} >= {} threshold days", 
-                    payroll.getEmpName(), effectivePresentDaysDecimal, fullMonthThreshold);
+                    payroll.getEmpName(), effectivePresentDays, fullMonthThreshold);
         } else {
             // Pay based on actual days worked
             // Formula: Final Payment * Effective Present Days / Threshold Days
-            // Half days are counted as 0.5
             workingDayAmount = finalPayment
-                    .multiply(BigDecimal.valueOf(effectivePresentDaysDecimal))
+                    .multiply(BigDecimal.valueOf(effectivePresentDays))
                     .divide(BigDecimal.valueOf(fullMonthThreshold), 0, RoundingMode.HALF_UP);
             log.debug("Employee {} partial salary: {} * {} / {} = {}", 
-                    payroll.getEmpName(), finalPayment, effectivePresentDaysDecimal, fullMonthThreshold, workingDayAmount);
+                    payroll.getEmpName(), finalPayment, effectivePresentDays, fullMonthThreshold, workingDayAmount);
         }
         payroll.setWorkingDayAmount(workingDayAmount);
         
@@ -350,6 +356,16 @@ public class PayrollService {
                 .multiply(regularMultiplier)
                 .setScale(0, RoundingMode.HALF_UP);
         payroll.setOvertimeHourAmount(otHourAmount);
+
+        // LATE HOUR CHARGES = Per hour rate * Total late hours
+        // This is deducted from salary (late hours are counted and charged at hourly rate)
+        BigDecimal totalLateHours = payroll.getTotalLateHours() != null ? payroll.getTotalLateHours() : BigDecimal.ZERO;
+        BigDecimal lateHourCharges = perHourRate
+                .multiply(totalLateHours)
+                .setScale(0, RoundingMode.HALF_UP);
+        payroll.setLateHourCharges(lateHourCharges);
+        log.debug("Employee {} late hour charges: {} hrs * {} rate = {}", 
+                payroll.getEmpName(), totalLateHours, perHourRate, lateHourCharges);
 
         // Set allowances from employee master
         payroll.setHouseRent(emp.getHraPercent() != null ? 
@@ -1026,6 +1042,7 @@ public class PayrollService {
         attendance.put("absentDays", payroll.getAbsentDays());
         attendance.put("halfDays", payroll.getHalfDays());
         attendance.put("lateDays", payroll.getLateDays());
+        attendance.put("totalLateHours", payroll.getTotalLateHours());
         attendance.put("weeklyOffDays", payroll.getWeeklyOffDays());
         attendance.put("holidayDays", payroll.getHolidayDays());
         attendance.put("overtimeDays", payroll.getOvertimeDays());
@@ -1125,6 +1142,9 @@ public class PayrollService {
             row.put("overtimeHours", p.getOvertimeHours());
             row.put("overtimeDayAmount", p.getOvertimeDayAmount());
             row.put("overtimeHourAmount", p.getOvertimeHourAmount());
+            row.put("lateDays", p.getLateDays());
+            row.put("totalLateHours", p.getTotalLateHours());
+            row.put("lateHourCharges", p.getLateHourCharges());
             row.put("houseRent", p.getHouseRent());
             row.put("medicalExpense", p.getMedicalExpense());
             row.put("grossSalary", p.getGrossSalary());

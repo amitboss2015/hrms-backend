@@ -67,6 +67,13 @@ public class Payroll {
     private Integer holidayDays;
     private Integer lateDays;
     private Integer lateDeductionDays;     // 3 lates = 1 absent
+    
+    // ============ LATE HOURS TRACKING ============
+    @Column(precision = 8, scale = 2)
+    private BigDecimal totalLateHours = BigDecimal.ZERO;       // Total late hours accumulated
+    
+    @Column(precision = 12, scale = 2)
+    private BigDecimal lateHourCharges = BigDecimal.ZERO;      // Late hour deduction (hourly rate × late hours)
 
     // ============ WORKING DAY CALCULATION ============
     @Column(precision = 12, scale = 2)
@@ -218,11 +225,12 @@ public class Payroll {
 
         // Calculate total deductions (for display purposes)
         // This shows all amounts being deducted from gross
-        // Formula: ESI + PF Employee + PF Company + ADV + Professional Tax + TDS + Other Deductions
+        // Formula: ESI + PF Employee + PF Company + ADV + Late Hour Charges + Professional Tax + TDS + Other Deductions
         this.totalDeductions = safeAdd(esiEmployee)
                 .add(safeAdd(pfEmployee))
                 .add(safeAdd(pfCompany))     // PF Company is also deducted per Excel formula
                 .add(effectiveAdvance)       // ADV includes all loan deductions
+                .add(safeAdd(lateHourCharges)) // Late hour deduction
                 .add(safeAdd(professionalTax))
                 .add(safeAdd(tds))
                 .add(safeAdd(otherDeduction));
@@ -346,6 +354,12 @@ public class Payroll {
 
     public Integer getLateDeductionDays() { return lateDeductionDays; }
     public void setLateDeductionDays(Integer lateDeductionDays) { this.lateDeductionDays = lateDeductionDays; }
+
+    public BigDecimal getTotalLateHours() { return totalLateHours; }
+    public void setTotalLateHours(BigDecimal totalLateHours) { this.totalLateHours = totalLateHours; }
+
+    public BigDecimal getLateHourCharges() { return lateHourCharges; }
+    public void setLateHourCharges(BigDecimal lateHourCharges) { this.lateHourCharges = lateHourCharges; }
 
     public BigDecimal getWorkingDayAmount() { return workingDayAmount; }
     public void setWorkingDayAmount(BigDecimal workingDayAmount) { this.workingDayAmount = workingDayAmount; }
