@@ -299,27 +299,31 @@ public class PayrollService {
         int standardHoursPerDay = config.getStandardWorkingHoursPerDay(); // e.g., 8
         boolean thresholdEnabled = config.getEnableFullMonthSalaryThreshold();
 
-        // Total effective present days = present + half days + paid leave days
-        // This matches Excel logic where HALF_DAY and LEAVE are counted as full present days for salary
-        int effectivePresentDays = presentDays + halfDays + paidLeaveDays;
+        // Total effective present days for salary calculation:
+        // - Present days count as 1
+        // - Half days count as 0.5 (so we use decimal calculation)
+        // - Paid leave days count as 1 (full day)
+        // Formula matches Excel: Present + (HalfDays * 0.5) + PaidLeave
+        double effectivePresentDaysDecimal = presentDays + (halfDays * 0.5) + paidLeaveDays;
         
         // WORKING DAY AMOUNT calculation based on Excel formula:
         // If employee worked >= threshold days, they get FULL salary
         // Otherwise: Working Day Amount = Final Payment * Present Days / Threshold Days
         BigDecimal workingDayAmount;
-        if (thresholdEnabled && effectivePresentDays >= fullMonthThreshold) {
+        if (thresholdEnabled && effectivePresentDaysDecimal >= fullMonthThreshold) {
             // Employee qualifies for full month salary
             workingDayAmount = finalPayment;
             log.debug("Employee {} qualified for full salary: {} >= {} threshold days", 
-                    payroll.getEmpName(), effectivePresentDays, fullMonthThreshold);
+                    payroll.getEmpName(), effectivePresentDaysDecimal, fullMonthThreshold);
         } else {
             // Pay based on actual days worked
             // Formula: Final Payment * Effective Present Days / Threshold Days
+            // Half days are counted as 0.5
             workingDayAmount = finalPayment
-                    .multiply(BigDecimal.valueOf(effectivePresentDays))
+                    .multiply(BigDecimal.valueOf(effectivePresentDaysDecimal))
                     .divide(BigDecimal.valueOf(fullMonthThreshold), 0, RoundingMode.HALF_UP);
             log.debug("Employee {} partial salary: {} * {} / {} = {}", 
-                    payroll.getEmpName(), finalPayment, effectivePresentDays, fullMonthThreshold, workingDayAmount);
+                    payroll.getEmpName(), finalPayment, effectivePresentDaysDecimal, fullMonthThreshold, workingDayAmount);
         }
         payroll.setWorkingDayAmount(workingDayAmount);
         
