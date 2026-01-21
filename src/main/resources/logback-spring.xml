@@ -3,8 +3,6 @@
     <!-- 
         ChandraHR HRMS Logging Configuration
         
-        Log Format: Structured JSON for production, readable pattern for dev
-        
         Standard fields included in every log:
         - timestamp: ISO 8601 format
         - level: Log level (DEBUG, INFO, WARN, ERROR)
@@ -13,7 +11,6 @@
         - userId: Authenticated user
         - logger: Logger name (class)
         - message: Log message
-        - exception: Stack trace if present
         
         Compatible with: Splunk, ELK, Datadog, CloudWatch, Syslog, Grafana Loki
     -->
@@ -28,20 +25,7 @@
         </encoder>
     </appender>
 
-    <!-- ============ CONSOLE APPENDER (Production - JSON) ============ -->
-    <appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder class="ch.qos.logback.core.encoder.LayoutWrappingEncoder">
-            <layout class="ch.qos.logback.contrib.json.classic.JsonLayout">
-                <jsonFormatter class="ch.qos.logback.contrib.jackson.JacksonJsonFormatter">
-                    <prettyPrint>false</prettyPrint>
-                </jsonFormatter>
-                <timestampFormat>yyyy-MM-dd'T'HH:mm:ss.SSSXXX</timestampFormat>
-                <appendLineSeparator>true</appendLineSeparator>
-            </layout>
-        </encoder>
-    </appender>
-
-    <!-- ============ FILE APPENDER (Rolling - JSON Format) ============ -->
+    <!-- ============ FILE APPENDER (Rolling - Structured Format) ============ -->
     <appender name="FILE_JSON" class="ch.qos.logback.core.rolling.RollingFileAppender">
         <file>logs/hrms-app.log</file>
         <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
@@ -53,8 +37,7 @@
             </timeBasedFileNamingAndTriggeringPolicy>
         </rollingPolicy>
         <encoder>
-            <!-- Structured format that can be parsed as JSON or read by humans -->
-            <pattern>{"@timestamp":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}","level":"%level","app":"${APP_NAME}","env":"${APP_ENV}","correlationId":"%X{correlationId:-}","tenantId":"%X{tenantId:-}","userId":"%X{userId:-}","userRole":"%X{userRole:-}","clientIp":"%X{clientIp:-}","requestUri":"%X{requestUri:-}","requestMethod":"%X{requestMethod:-}","logger":"%logger{36}","message":"%replace(%msg){'\"','\\\"'}","thread":"%thread"%replace(,"exception":"%replace(%xException){'\"','\\\"'}"){'"exception":""',''}%n</pattern>
+            <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} | %level | corr=%X{correlationId:-} | tenant=%X{tenantId:-} | user=%X{userId:-} | %logger{36} | %msg%n</pattern>
         </encoder>
     </appender>
 
@@ -67,7 +50,7 @@
             <totalSizeCap>500MB</totalSizeCap>
         </rollingPolicy>
         <encoder>
-            <pattern>{"@timestamp":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}","level":"%level","event":"SECURITY","correlationId":"%X{correlationId:-}","tenantId":"%X{tenantId:-}","userId":"%X{userId:-}","userRole":"%X{userRole:-}","clientIp":"%X{clientIp:-}","requestUri":"%X{requestUri:-}","message":"%replace(%msg){'\"','\\\"'}"}%n</pattern>
+            <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} | SECURITY | %level | corr=%X{correlationId:-} | tenant=%X{tenantId:-} | user=%X{userId:-} | role=%X{userRole:-} | ip=%X{clientIp:-} | uri=%X{requestUri:-} | %msg%n</pattern>
         </encoder>
     </appender>
 
@@ -80,7 +63,7 @@
             <totalSizeCap>500MB</totalSizeCap>
         </rollingPolicy>
         <encoder>
-            <pattern>{"@timestamp":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}","type":"access","correlationId":"%X{correlationId:-}","tenantId":"%X{tenantId:-}","userId":"%X{userId:-}","clientIp":"%X{clientIp:-}","method":"%X{requestMethod:-}","uri":"%X{requestUri:-}","userAgent":"%X{userAgent:-}","message":"%msg"}%n</pattern>
+            <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} | ACCESS | corr=%X{correlationId:-} | tenant=%X{tenantId:-} | user=%X{userId:-} | ip=%X{clientIp:-} | %X{requestMethod:-} %X{requestUri:-} | %msg%n</pattern>
         </encoder>
     </appender>
 
@@ -96,7 +79,7 @@
             <totalSizeCap>500MB</totalSizeCap>
         </rollingPolicy>
         <encoder>
-            <pattern>{"@timestamp":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}","level":"ERROR","correlationId":"%X{correlationId:-}","tenantId":"%X{tenantId:-}","userId":"%X{userId:-}","clientIp":"%X{clientIp:-}","logger":"%logger{36}","message":"%replace(%msg){'\"','\\\"'}","exception":"%replace(%xException){'\"','\\\"'}"}%n</pattern>
+            <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} | ERROR | corr=%X{correlationId:-} | tenant=%X{tenantId:-} | user=%X{userId:-} | ip=%X{clientIp:-} | %logger{36} | %msg%n%throwable</pattern>
         </encoder>
     </appender>
 
@@ -127,6 +110,12 @@
         <appender-ref ref="ASYNC_FILE"/>
         <appender-ref ref="CONSOLE_DEV"/>
     </logger>
+    
+    <!-- Security Audit Logger -->
+    <logger name="security.audit" level="INFO" additivity="false">
+        <appender-ref ref="SECURITY_AUDIT"/>
+        <appender-ref ref="CONSOLE_DEV"/>
+    </logger>
 
     <!-- Application Core Loggers -->
     <logger name="com.example.hrms" level="INFO">
@@ -139,6 +128,7 @@
     <!-- Hibernate SQL (controlled via application.properties) -->
     <logger name="org.hibernate.SQL" level="WARN"/>
     <logger name="org.hibernate.type.descriptor.sql" level="WARN"/>
+    <logger name="org.hibernate.orm.jdbc.bind" level="WARN"/>
 
     <!-- Spring Framework -->
     <logger name="org.springframework" level="WARN"/>
@@ -161,7 +151,7 @@
     <!-- Production Profile -->
     <springProfile name="prod">
         <root level="INFO">
-            <appender-ref ref="CONSOLE_JSON"/>
+            <appender-ref ref="CONSOLE_DEV"/>
             <appender-ref ref="ASYNC_FILE"/>
             <appender-ref ref="ERROR_FILE"/>
         </root>
