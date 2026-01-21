@@ -15,7 +15,6 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/payroll")
-        RequestMethod.DELETE, RequestMethod.PATCH, RequestMethod.OPTIONS})
 @Slf4j
 public class PayrollController {
 
