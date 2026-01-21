@@ -33,9 +33,15 @@ public class TenantContext {
      * Get the current tenant ID, with a default fallback
      * @param defaultTenantId fallback value if no tenant is set
      * @return tenant ID or default
+     * @deprecated Use requireTenantId() instead. Falling back to default tenant is a security risk.
      */
+    @Deprecated
     public static String getTenantIdOrDefault(String defaultTenantId) {
         String tenantId = currentTenant.get();
+        if (tenantId == null) {
+            // Log warning in production - this should not happen
+            System.err.println("[SECURITY WARNING] TenantContext.getTenantIdOrDefault called without tenant - using fallback: " + defaultTenantId);
+        }
         return tenantId != null ? tenantId : defaultTenantId;
     }
     

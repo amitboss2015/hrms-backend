@@ -10,7 +10,6 @@ import org.springframework.web.bind.annotation.*;
 
 @RestController
 @RequestMapping("/api/leave/admin")
-@CrossOrigin(origins = "*")
 public class LeaveAdminController {
   private final LeaveAdminService service;
   public LeaveAdminController(LeaveAdminService service){ this.service = service; }

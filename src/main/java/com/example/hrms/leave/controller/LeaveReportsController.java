@@ -13,7 +13,6 @@ import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/leave/reports")
-@CrossOrigin(origins = "*")
 public class LeaveReportsController {
 
     private final EmployeeLeaveRepository leaveRepo;

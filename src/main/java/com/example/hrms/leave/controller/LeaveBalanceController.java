@@ -9,7 +9,6 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/leave/balances")
-@CrossOrigin(origins = "*")
 public class LeaveBalanceController {
 
     private final LeaveLedgerService ledgerService;

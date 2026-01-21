@@ -30,7 +30,6 @@ import java.util.stream.Collectors;
 @PreAuthorize("hasRole('SUPER_ADMIN')")
 @RequiredArgsConstructor
 @Slf4j
-@CrossOrigin(origins = "*")
 public class AdminDashboardController {
 
     private final AdminDashboardService dashboardService;

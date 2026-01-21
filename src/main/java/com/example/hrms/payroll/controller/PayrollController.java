@@ -15,7 +15,6 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/payroll")
-@CrossOrigin(origins = "*", methods = {RequestMethod.GET, RequestMethod.POST, RequestMethod.PUT, 
         RequestMethod.DELETE, RequestMethod.PATCH, RequestMethod.OPTIONS})
 @Slf4j
 public class PayrollController {

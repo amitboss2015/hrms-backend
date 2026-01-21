@@ -24,6 +24,8 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 import lombok.extern.slf4j.Slf4j;
 
+import org.springframework.beans.factory.annotation.Value;
+
 import java.util.Arrays;
 import java.util.List;
 
@@ -40,6 +42,9 @@ public class SecurityConfig {
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final RateLimitingFilter rateLimitingFilter;
     private final UserDetailsService userDetailsService;
+    
+    @Value("${app.swagger.enabled:true}")
+    private boolean swaggerEnabled;
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
@@ -64,13 +69,24 @@ public class SecurityConfig {
                 .requestMatchers("/api/public/**").permitAll()
                 .requestMatchers("/api/health").permitAll()
                 
-                // Swagger/OpenAPI
-                .requestMatchers("/swagger-ui/**", "/swagger-ui.html").permitAll()
-                .requestMatchers("/v3/api-docs/**").permitAll()
-                .requestMatchers("/swagger-resources/**").permitAll()
+                // Swagger/OpenAPI - conditionally enabled based on profile
+                // In production, swaggerEnabled=false, so these require SUPER_ADMIN
+                .requestMatchers("/swagger-ui/**", "/swagger-ui.html")
+                    .access((authentication, context) -> 
+                        new org.springframework.security.authorization.AuthorizationDecision(
+                            swaggerEnabled || hasRole(authentication.get(), "SUPER_ADMIN")))
+                .requestMatchers("/v3/api-docs/**")
+                    .access((authentication, context) -> 
+                        new org.springframework.security.authorization.AuthorizationDecision(
+                            swaggerEnabled || hasRole(authentication.get(), "SUPER_ADMIN")))
+                .requestMatchers("/swagger-resources/**")
+                    .access((authentication, context) -> 
+                        new org.springframework.security.authorization.AuthorizationDecision(
+                            swaggerEnabled || hasRole(authentication.get(), "SUPER_ADMIN")))
                 
-                // Actuator
-                .requestMatchers("/actuator/**").permitAll()
+                // Actuator - health is public, others require SUPER_ADMIN
+                .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
+                .requestMatchers("/actuator/**").hasRole("SUPER_ADMIN")
                 
                 // OPTIONS requests for CORS preflight
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
@@ -199,5 +215,16 @@ public class SecurityConfig {
     @Bean
     public PasswordEncoder passwordEncoder() {
         return new BCryptPasswordEncoder(12);  // Cost factor 12 for security
+    }
+    
+    /**
+     * Helper to check if authentication has a specific role
+     */
+    private boolean hasRole(org.springframework.security.core.Authentication auth, String role) {
+        if (auth == null || !auth.isAuthenticated()) {
+            return false;
+        }
+        return auth.getAuthorities().stream()
+                .anyMatch(a -> a.getAuthority().equals("ROLE_" + role));
     }
 }

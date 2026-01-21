@@ -20,7 +20,6 @@ import java.util.*;
 
 @RestController
 @RequestMapping("/api/employees")
-@CrossOrigin(origins = "*", allowedHeaders = "*", methods = {RequestMethod.GET, RequestMethod.POST, RequestMethod.PUT, RequestMethod.DELETE, RequestMethod.OPTIONS, RequestMethod.PATCH})
 public class EmployeeController {
     private final EmployeeService service;
     private final EmployeeExcelService excelService;

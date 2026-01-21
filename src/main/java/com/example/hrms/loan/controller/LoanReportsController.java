@@ -32,7 +32,6 @@ import java.util.stream.Collectors;
  */
 @RestController
 @RequestMapping("/api/loan/reports")
-@CrossOrigin(origins = "*")
 public class LoanReportsController {
 
     private final LoanRepository loanRepo;

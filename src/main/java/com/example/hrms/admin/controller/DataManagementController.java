@@ -28,7 +28,6 @@ import java.util.Optional;
  */
 @RestController
 @RequestMapping("/api/admin/data")
-@CrossOrigin(origins = "*")
 @Slf4j
 public class DataManagementController {
 

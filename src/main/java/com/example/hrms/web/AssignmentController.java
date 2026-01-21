@@ -10,7 +10,6 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/employee-shifts")
-@CrossOrigin(origins = "*")
 public class AssignmentController {
   private final AssignmentService service;
   public AssignmentController(AssignmentService service) { this.service = service; }

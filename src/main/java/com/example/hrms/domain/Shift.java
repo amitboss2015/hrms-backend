@@ -18,9 +18,9 @@ public class Shift {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    // Multi-tenancy support
+    // Multi-tenancy support - tenant ID is required, no default
     @Column(nullable = false, length = 50)
-    private String tenantId = "ORG001";
+    private String tenantId;
 
     @Column(nullable = false)
     private String code;

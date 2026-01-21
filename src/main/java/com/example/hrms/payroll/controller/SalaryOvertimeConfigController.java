@@ -14,7 +14,6 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/api/config/salary-overtime")
-@CrossOrigin(origins = "*")
 @RequiredArgsConstructor
 public class SalaryOvertimeConfigController {
 

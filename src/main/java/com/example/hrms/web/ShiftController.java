@@ -12,7 +12,6 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/api/shifts")
-@CrossOrigin(origins = "*")
 public class ShiftController {
   private final ShiftService service;
   public ShiftController(ShiftService service) { this.service = service; }

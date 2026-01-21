@@ -7,16 +7,24 @@ import com.example.hrms.tenant.domain.Tenant;
 import com.example.hrms.tenant.repo.TenantRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
+import java.security.SecureRandom;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Base64;
 
 /**
  * Initializes the superadmin user on application startup.
  * Only creates if no users exist in the system.
+ * 
+ * Security: 
+ * - Uses environment variables for credentials (recommended for production)
+ * - Falls back to random password generation if not provided
+ * - Logs the generated password ONCE for initial setup
  */
 @Component
 @RequiredArgsConstructor
@@ -24,8 +32,13 @@ import java.time.LocalDateTime;
 public class DataInitializer implements CommandLineRunner {
 
     private static final String SUPERADMIN_TENANT_ID = "SUPERADMIN";
-    private static final String SUPERADMIN_EMAIL = "admin@chandrahr.in";
-    private static final String SUPERADMIN_PASSWORD = "Admin@123";
+    
+    // Read from environment variables with secure defaults
+    @Value("${app.admin.email:admin@hrms.local}")
+    private String adminEmail;
+    
+    @Value("${app.admin.password:}")  // Empty default = generate random
+    private String adminPassword;
     
     private final UserRepository userRepository;
     private final TenantRepository tenantRepository;
@@ -47,9 +60,9 @@ public class DataInitializer implements CommandLineRunner {
         if (!tenantRepository.existsById(SUPERADMIN_TENANT_ID)) {
             Tenant tenant = Tenant.builder()
                     .id(SUPERADMIN_TENANT_ID)
-                    .name("ChandraHR Admin")
+                    .name("HRMS Admin")
                     .subdomain("admin")
-                    .email(SUPERADMIN_EMAIL)
+                    .email(adminEmail)
                     .city("India")
                     .state("")
                     .country("India")
@@ -68,11 +81,14 @@ public class DataInitializer implements CommandLineRunner {
     }
 
     private void initializeSuperadminUser() {
-        if (!userRepository.existsByEmail(SUPERADMIN_EMAIL)) {
+        if (!userRepository.existsByEmail(adminEmail)) {
+            // Use provided password or generate a secure random one
+            String password = getOrGeneratePassword();
+            
             User user = User.builder()
                     .tenantId(SUPERADMIN_TENANT_ID)
-                    .email(SUPERADMIN_EMAIL)
-                    .passwordHash(passwordEncoder.encode(SUPERADMIN_PASSWORD))
+                    .email(adminEmail)
+                    .passwordHash(passwordEncoder.encode(password))
                     .firstName("Super")
                     .lastName("Admin")
                     .role(UserRole.SUPER_ADMIN)
@@ -83,7 +99,36 @@ public class DataInitializer implements CommandLineRunner {
                     .passwordChangedAt(LocalDateTime.now())
                     .build();
             userRepository.save(user);
-            log.info("✅ Created superadmin: {} (password: {})", SUPERADMIN_EMAIL, SUPERADMIN_PASSWORD);
+            
+            // Log credentials - ONLY on first creation
+            log.warn("═══════════════════════════════════════════════════════════════");
+            log.warn("  🔐 SUPERADMIN CREDENTIALS (Save these securely!)");
+            log.warn("  📧 Email: {}", adminEmail);
+            if (adminPassword == null || adminPassword.isBlank()) {
+                log.warn("  🔑 Password: {} (AUTO-GENERATED)", password);
+                log.warn("  ⚠️  Change this password immediately after first login!");
+            } else {
+                log.warn("  🔑 Password: (provided via environment variable)");
+            }
+            log.warn("═══════════════════════════════════════════════════════════════");
         }
+    }
+    
+    /**
+     * Get password from environment or generate a secure random one
+     */
+    private String getOrGeneratePassword() {
+        if (adminPassword != null && !adminPassword.isBlank()) {
+            return adminPassword;
+        }
+        
+        // Generate a secure random password (16 chars)
+        SecureRandom random = new SecureRandom();
+        byte[] bytes = new byte[12];
+        random.nextBytes(bytes);
+        String randomPart = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+        
+        // Add special chars to meet password requirements
+        return randomPart.substring(0, 12) + "@1Aa";
     }
 }

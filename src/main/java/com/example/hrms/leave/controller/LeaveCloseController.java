@@ -9,7 +9,6 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/leave/close")
-@CrossOrigin(origins = "*")
 public class LeaveCloseController {
 
     private final LeaveCloseService service;
