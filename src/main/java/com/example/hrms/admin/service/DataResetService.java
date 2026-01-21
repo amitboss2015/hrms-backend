@@ -1,6 +1,7 @@
 package com.example.hrms.admin.service;
 
 import com.example.hrms.attendance.repo.*;
+import com.example.hrms.config.LoggingUtils;
 import com.example.hrms.loan.repo.LoanRepository;
 import com.example.hrms.loan.repo.LoanRepaymentRepository;
 import com.example.hrms.payroll.repo.PayrollRepository;
@@ -14,6 +15,9 @@ import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.HashMap;
 import java.util.Map;
+
+import static com.example.hrms.config.LoggingUtils.SecurityEvents;
+import static com.example.hrms.config.LoggingUtils.Operations;
 
 /**
  * Service to handle data reset/cleanup operations before re-import.
@@ -66,7 +70,12 @@ public class DataResetService {
     @Transactional
     public Map<String, Object> resetMonthData(String tenantId, int year, int month) {
         Map<String, Object> result = new HashMap<>();
-        log.info("Starting data reset for tenant={}, year={}, month={}", tenantId, year, month);
+        long startTime = System.currentTimeMillis();
+        
+        LoggingUtils.setOperationContext(Operations.DATA_RESET);
+        log.info("[DATA_RESET] Starting data reset for tenant={}, year={}, month={}", tenantId, year, month);
+        LoggingUtils.securityEvent(SecurityEvents.DATA_DELETE, "Data reset initiated", 
+            Map.of("year", year, "month", month));
 
         try {
             // Convert tenantId to orgId for entities that use orgId
@@ -111,10 +120,20 @@ public class DataResetService {
             result.put("success", true);
             result.put("message", String.format("Successfully reset data for %d/%d", month, year));
             
+            long duration = System.currentTimeMillis() - startTime;
+            log.info("[DATA_RESET] Completed successfully in {}ms | payroll={}, attendance={}, loans={}", 
+                duration, result.get("payrollDeleted"), result.get("attendanceDaysDeleted"), result.get("loansReset"));
+            LoggingUtils.securityEvent(SecurityEvents.DATA_DELETE, "Data reset completed successfully", 
+                Map.of("year", year, "month", month, "durationMs", duration));
+            
         } catch (Exception e) {
-            log.error("Error resetting month data: {}", e.getMessage(), e);
+            log.error("[DATA_RESET] Error resetting month data: {}", e.getMessage(), e);
+            LoggingUtils.securityEvent(SecurityEvents.DATA_DELETE, "Data reset FAILED: " + e.getMessage(), 
+                Map.of("year", year, "month", month, "error", e.getClass().getSimpleName()));
             result.put("success", false);
             result.put("error", e.getMessage());
+        } finally {
+            LoggingUtils.clearOperationContext();
         }
 
         return result;

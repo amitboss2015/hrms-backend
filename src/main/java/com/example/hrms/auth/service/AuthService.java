@@ -30,7 +30,12 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.Arrays;
+import java.util.Map;
 import java.util.Optional;
+
+import static com.example.hrms.config.LoggingUtils.SecurityEvents;
+import static com.example.hrms.config.LoggingUtils.securityEvent;
+import static com.example.hrms.config.LoggingUtils.securityWarning;
 
 /**
  * Authentication Service - handles login, logout, token refresh
@@ -129,6 +134,8 @@ public class AuthService {
             loginAuditRepository.save(
                 LoginAudit.loginSuccess(user.getId(), tenantId, user.getEmail(), clientIp, userAgent)
             );
+            securityEvent(SecurityEvents.LOGIN_SUCCESS, "User authenticated successfully", 
+                Map.of("email", user.getEmail(), "role", user.getRole().name()));
 
             // Get tenant name
             String tenantName = tenantRepository.findById(user.getTenantId())
@@ -158,6 +165,8 @@ public class AuthService {
             loginAuditRepository.save(
                 LoginAudit.loginFailed(tenantId, request.getEmail(), clientIp, userAgent, "Invalid credentials")
             );
+            securityWarning(SecurityEvents.LOGIN_FAILURE, "Invalid credentials", 
+                Map.of("email", request.getEmail(), "clientIp", clientIp));
             throw new BadCredentialsException("Invalid email or password");
         }
     }

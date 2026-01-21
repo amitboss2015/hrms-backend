@@ -101,6 +101,18 @@
       <version>8.7.0</version>
     </dependency>
 
+    <!-- Structured Logging (JSON format for Splunk/ELK/Datadog) -->
+    <dependency>
+      <groupId>ch.qos.logback.contrib</groupId>
+      <artifactId>logback-json-classic</artifactId>
+      <version>0.1.5</version>
+    </dependency>
+    <dependency>
+      <groupId>ch.qos.logback.contrib</groupId>
+      <artifactId>logback-jackson</artifactId>
+      <version>0.1.5</version>
+    </dependency>
+
     <!-- Email (Gmail SMTP) -->
     <dependency>
       <groupId>org.springframework.boot</groupId>

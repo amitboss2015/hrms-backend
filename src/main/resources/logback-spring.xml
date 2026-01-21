@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!-- 
+        ChandraHR HRMS Logging Configuration
+        
+        Log Format: Structured JSON for production, readable pattern for dev
+        
+        Standard fields included in every log:
+        - timestamp: ISO 8601 format
+        - level: Log level (DEBUG, INFO, WARN, ERROR)
+        - correlationId: Unique request ID for tracing
+        - tenantId: Current tenant context
+        - userId: Authenticated user
+        - logger: Logger name (class)
+        - message: Log message
+        - exception: Stack trace if present
+        
+        Compatible with: Splunk, ELK, Datadog, CloudWatch, Syslog, Grafana Loki
+    -->
+
+    <springProperty scope="context" name="APP_NAME" source="app.name" defaultValue="ChandraHR"/>
+    <springProperty scope="context" name="APP_ENV" source="spring.profiles.active" defaultValue="dev"/>
+
+    <!-- ============ CONSOLE APPENDER (Development - Human Readable) ============ -->
+    <appender name="CONSOLE_DEV" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %highlight(%-5level) [%X{correlationId:-NO_CORR}] [%X{tenantId:-NO_TENANT}] [%X{userId:-anonymous}] %cyan(%-40.40logger{39}) : %msg%n%throwable</pattern>
+        </encoder>
+    </appender>
+
+    <!-- ============ CONSOLE APPENDER (Production - JSON) ============ -->
+    <appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="ch.qos.logback.core.encoder.LayoutWrappingEncoder">
+            <layout class="ch.qos.logback.contrib.json.classic.JsonLayout">
+                <jsonFormatter class="ch.qos.logback.contrib.jackson.JacksonJsonFormatter">
+                    <prettyPrint>false</prettyPrint>
+                </jsonFormatter>
+                <timestampFormat>yyyy-MM-dd'T'HH:mm:ss.SSSXXX</timestampFormat>
+                <appendLineSeparator>true</appendLineSeparator>
+            </layout>
+        </encoder>
+    </appender>
+
+    <!-- ============ FILE APPENDER (Rolling - JSON Format) ============ -->
+    <appender name="FILE_JSON" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/hrms-app.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>logs/hrms-app.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
+            <timeBasedFileNamingAndTriggeringPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedFNATP">
+                <maxFileSize>100MB</maxFileSize>
+            </timeBasedFileNamingAndTriggeringPolicy>
+        </rollingPolicy>
+        <encoder>
+            <!-- Structured format that can be parsed as JSON or read by humans -->
+            <pattern>{"@timestamp":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}","level":"%level","app":"${APP_NAME}","env":"${APP_ENV}","correlationId":"%X{correlationId:-}","tenantId":"%X{tenantId:-}","userId":"%X{userId:-}","userRole":"%X{userRole:-}","clientIp":"%X{clientIp:-}","requestUri":"%X{requestUri:-}","requestMethod":"%X{requestMethod:-}","logger":"%logger{36}","message":"%replace(%msg){'\"','\\\"'}","thread":"%thread"%replace(,"exception":"%replace(%xException){'\"','\\\"'}"){'"exception":""',''}%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- ============ SECURITY AUDIT LOG (Separate file for security events) ============ -->
+    <appender name="SECURITY_AUDIT" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/security-audit.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>logs/security-audit.%d{yyyy-MM-dd}.log.gz</fileNamePattern>
+            <maxHistory>90</maxHistory>
+            <totalSizeCap>500MB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>{"@timestamp":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}","level":"%level","event":"SECURITY","correlationId":"%X{correlationId:-}","tenantId":"%X{tenantId:-}","userId":"%X{userId:-}","userRole":"%X{userRole:-}","clientIp":"%X{clientIp:-}","requestUri":"%X{requestUri:-}","message":"%replace(%msg){'\"','\\\"'}"}%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- ============ HTTP ACCESS LOG (Separate file for access logs) ============ -->
+    <appender name="HTTP_ACCESS" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/http-access.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>logs/http-access.%d{yyyy-MM-dd}.log.gz</fileNamePattern>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>500MB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>{"@timestamp":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}","type":"access","correlationId":"%X{correlationId:-}","tenantId":"%X{tenantId:-}","userId":"%X{userId:-}","clientIp":"%X{clientIp:-}","method":"%X{requestMethod:-}","uri":"%X{requestUri:-}","userAgent":"%X{userAgent:-}","message":"%msg"}%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- ============ ERROR LOG (Separate file for errors only) ============ -->
+    <appender name="ERROR_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/errors.log</file>
+        <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+            <level>ERROR</level>
+        </filter>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>logs/errors.%d{yyyy-MM-dd}.log.gz</fileNamePattern>
+            <maxHistory>60</maxHistory>
+            <totalSizeCap>500MB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>{"@timestamp":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}","level":"ERROR","correlationId":"%X{correlationId:-}","tenantId":"%X{tenantId:-}","userId":"%X{userId:-}","clientIp":"%X{clientIp:-}","logger":"%logger{36}","message":"%replace(%msg){'\"','\\\"'}","exception":"%replace(%xException){'\"','\\\"'}"}%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- ============ ASYNC WRAPPER (For better performance) ============ -->
+    <appender name="ASYNC_FILE" class="ch.qos.logback.classic.AsyncAppender">
+        <queueSize>512</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <appender-ref ref="FILE_JSON"/>
+    </appender>
+
+    <!-- ============ LOGGER CONFIGURATIONS ============ -->
+
+    <!-- HTTP Access Logger (from LoggingFilter) -->
+    <logger name="http.access" level="INFO" additivity="false">
+        <appender-ref ref="HTTP_ACCESS"/>
+        <appender-ref ref="CONSOLE_DEV"/>
+    </logger>
+
+    <!-- Security/Auth Loggers -->
+    <logger name="com.example.hrms.auth" level="INFO" additivity="false">
+        <appender-ref ref="SECURITY_AUDIT"/>
+        <appender-ref ref="ASYNC_FILE"/>
+        <appender-ref ref="CONSOLE_DEV"/>
+    </logger>
+
+    <logger name="com.example.hrms.auth.security" level="DEBUG" additivity="false">
+        <appender-ref ref="SECURITY_AUDIT"/>
+        <appender-ref ref="ASYNC_FILE"/>
+        <appender-ref ref="CONSOLE_DEV"/>
+    </logger>
+
+    <!-- Application Core Loggers -->
+    <logger name="com.example.hrms" level="INFO">
+        <appender-ref ref="ASYNC_FILE"/>
+    </logger>
+
+    <!-- Spring Security (reduce noise) -->
+    <logger name="org.springframework.security" level="WARN"/>
+    
+    <!-- Hibernate SQL (controlled via application.properties) -->
+    <logger name="org.hibernate.SQL" level="WARN"/>
+    <logger name="org.hibernate.type.descriptor.sql" level="WARN"/>
+
+    <!-- Spring Framework -->
+    <logger name="org.springframework" level="WARN"/>
+    <logger name="org.springframework.web" level="INFO"/>
+
+    <!-- ============ PROFILE-SPECIFIC CONFIGURATIONS ============ -->
+
+    <!-- Development Profile -->
+    <springProfile name="dev">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE_DEV"/>
+            <appender-ref ref="ASYNC_FILE"/>
+            <appender-ref ref="ERROR_FILE"/>
+        </root>
+        
+        <!-- More verbose logging in dev -->
+        <logger name="com.example.hrms" level="DEBUG"/>
+    </springProfile>
+
+    <!-- Production Profile -->
+    <springProfile name="prod">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE_JSON"/>
+            <appender-ref ref="ASYNC_FILE"/>
+            <appender-ref ref="ERROR_FILE"/>
+        </root>
+        
+        <!-- Less verbose in production -->
+        <logger name="com.example.hrms" level="INFO"/>
+        <logger name="org.springframework" level="WARN"/>
+    </springProfile>
+
+    <!-- Default (if no profile) -->
+    <springProfile name="default">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE_DEV"/>
+            <appender-ref ref="ASYNC_FILE"/>
+            <appender-ref ref="ERROR_FILE"/>
+        </root>
+    </springProfile>
+
+</configuration>
