@@ -31,4 +31,14 @@ public interface ImportBatchRepository extends JpaRepository<ImportBatch, Long> 
      * Find all import batches for a specific org.
      */
     List<ImportBatch> findByOrgIdOrderByUploadedAtDesc(Long orgId);
+    
+    /**
+     * Delete import batches by org, year and month.
+     */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.data.jpa.repository.Query("DELETE FROM ImportBatch b WHERE b.orgId = :orgId AND b.year = :year AND b.month = :month")
+    int deleteByOrgIdAndYearAndMonth(
+            @org.springframework.data.repository.query.Param("orgId") Long orgId,
+            @org.springframework.data.repository.query.Param("year") Integer year,
+            @org.springframework.data.repository.query.Param("month") Integer month);
 }

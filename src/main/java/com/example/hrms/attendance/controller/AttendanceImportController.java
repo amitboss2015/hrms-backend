@@ -1,5 +1,8 @@
 package com.example.hrms.attendance.controller;
 
+import com.example.hrms.admin.domain.ImportedFile;
+import com.example.hrms.admin.domain.ImportedFile.FileType;
+import com.example.hrms.admin.service.ImportedFileService;
 import com.example.hrms.attendance.domain.ImportBatch;
 import com.example.hrms.attendance.domain.ImportError;
 import com.example.hrms.attendance.dto.AttendanceImportPreview;
@@ -43,6 +46,12 @@ public class AttendanceImportController {
     private final AttendanceSessionRepository sessionRepo;
     private final AttendanceDayRepository dayRepo;
     private final AttendanceExcelService attendanceExcelService;
+    private final ImportedFileService importedFileService;
+    private final com.example.hrms.payroll.repo.PayrollRepository payrollRepo;
+    private final com.example.hrms.loan.service.LoanService loanService;
+    
+    // Maximum number of attendance Excel files to keep per device/month/year
+    private static final int MAX_FILES_PER_MONTH = 3;
 
     /**
      * Preview attendance import before confirming.
@@ -110,8 +119,68 @@ public class AttendanceImportController {
         if (!result.isDuplicate()) {
             engine.rebuildOrgMonth(orgId, YearMonth.of(year, month));
         }
+        
+        // Store the Excel file for audit (keep last 3 per month/year/device)
+        try {
+            storeAttendanceFile(tenantId, file, year, month, deviceId, uploadedBy, result);
+        } catch (Exception e) {
+            log.warn("Failed to store attendance file for audit: {}", e.getMessage());
+        }
 
         return ResponseEntity.ok(result);
+    }
+    
+    /**
+     * Store attendance Excel file for audit purposes.
+     * Keeps only the last MAX_FILES_PER_MONTH files per month/year.
+     */
+    private void storeAttendanceFile(String tenantId, MultipartFile file, int year, int month, 
+                                      Long deviceId, String uploadedBy, ImportResultDTO result) {
+        try {
+            // Build processing notes
+            String notes = String.format("Device: %s, Success: %d, Failed: %d", 
+                    deviceId != null ? deviceId.toString() : "N/A",
+                    result.getSuccess(), 
+                    result.getFailed());
+            
+            // Store the file
+            importedFileService.storeFile(
+                    tenantId, file, FileType.ATTENDANCE_LOG,
+                    year, month, uploadedBy,
+                    result.getTotal(),
+                    result.getSuccess(),
+                    result.getFailed(),
+                    notes
+            );
+            
+            // Cleanup old files - keep only last MAX_FILES_PER_MONTH
+            cleanupOldAttendanceFiles(tenantId, year, month);
+            
+            log.info("Stored attendance file for audit: {} ({}/{})", file.getOriginalFilename(), month, year);
+        } catch (Exception e) {
+            log.error("Error storing attendance file: {}", e.getMessage(), e);
+        }
+    }
+    
+    /**
+     * Remove old attendance files, keeping only the last MAX_FILES_PER_MONTH.
+     */
+    private void cleanupOldAttendanceFiles(String tenantId, int year, int month) {
+        try {
+            List<Map<String, Object>> files = importedFileService.getImportedFiles(
+                    tenantId, FileType.ATTENDANCE_LOG, year, month, 100);
+            
+            if (files.size() > MAX_FILES_PER_MONTH) {
+                // Files are ordered by uploadedAt DESC, so skip first MAX_FILES_PER_MONTH and delete rest
+                for (int i = MAX_FILES_PER_MONTH; i < files.size(); i++) {
+                    Long fileId = ((Number) files.get(i).get("id")).longValue();
+                    importedFileService.deleteFile(tenantId, fileId);
+                    log.info("Deleted old attendance file: {} (keeping only last {})", fileId, MAX_FILES_PER_MONTH);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Error cleaning up old attendance files: {}", e.getMessage());
+        }
     }
 
     /**
@@ -190,13 +259,60 @@ public class AttendanceImportController {
         sessionRepo.deleteByOrgIdAndWorkDateBetween(orgId, ym.atDay(1), ym.atEndOfMonth());
         dayRepo.deleteByOrgIdAndWorkDateBetween(orgId, ym.atDay(1), ym.atEndOfMonth());
 
+        // Delete payroll for the month (so it can be regenerated with new attendance)
+        int payrollDeleted = payrollRepo.deleteByTenantIdAndYearAndMonth(tenantId, batch.getYear(), batch.getMonth());
+        log.info("Deleted {} payroll records for {}/{}", payrollDeleted, batch.getMonth(), batch.getYear());
+        
+        // Clear loan deduction associations for this month (makes loans available for re-deduction)
+        loanService.clearOneTimeLoanAssociationsForMonth(tenantId, batch.getMonth(), batch.getYear());
+        log.info("Cleared loan associations for {}/{}", batch.getMonth(), batch.getYear());
+
         // Delete the batch itself
         batchRepo.delete(batch);
 
         Map<String, Object> result = new HashMap<>();
         result.put("success", true);
-        result.put("message", "Batch " + batchId + " and all associated data deleted successfully.");
+        result.put("message", "Batch " + batchId + " and all associated data (including payroll) deleted successfully.");
+        result.put("payrollDeleted", payrollDeleted);
         return ResponseEntity.ok(result);
+    }
+
+    /**
+     * Get list of stored attendance Excel files for a specific month/year.
+     * These are the original files that were imported.
+     */
+    @GetMapping("/import/files")
+    public ResponseEntity<List<Map<String, Object>>> getImportedFiles(
+            @RequestParam(required = false) Integer year,
+            @RequestParam(required = false) Integer month) {
+        
+        String tenantId = TenantContext.getTenantId();
+        List<Map<String, Object>> files = importedFileService.getImportedFiles(
+                tenantId, FileType.ATTENDANCE_LOG, year, month, 50);
+        
+        return ResponseEntity.ok(files);
+    }
+    
+    /**
+     * Download a previously imported attendance Excel file.
+     */
+    @GetMapping("/import/files/{fileId}/download")
+    public ResponseEntity<byte[]> downloadImportedFile(@PathVariable Long fileId) {
+        String tenantId = TenantContext.getTenantId();
+        
+        var fileOpt = importedFileService.getFileForDownload(fileId, tenantId);
+        
+        if (fileOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        
+        ImportedFile file = fileOpt.get();
+        
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=" + file.getOriginalFileName())
+                .contentType(MediaType.parseMediaType(
+                        file.getContentType() != null ? file.getContentType() : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                .body(file.getFileContent());
     }
 
     /**
@@ -314,6 +430,41 @@ public class AttendanceImportController {
         result.put("daysUpdated", updated);
         result.put("daysCreated", created);
         return ResponseEntity.ok(result);
+    }
+
+    /**
+     * Full recalculation of attendance from punches.
+     * This re-processes all punches through the attendance engine,
+     * recalculating working hours, overtime, etc.
+     */
+    @PostMapping("/import/rebuild")
+    @Transactional
+    public ResponseEntity<Map<String, Object>> rebuildAttendance(
+            @RequestParam("month") int month,
+            @RequestParam("year") int year) {
+
+        String tenantId = TenantContext.getTenantId();
+        Long orgId = getOrgIdFromTenant(tenantId);
+        YearMonth ym = YearMonth.of(year, month);
+
+        log.info("Full rebuild of attendance for tenant={}, month={}/{}", tenantId, month, year);
+
+        try {
+            engine.rebuildOrgMonth(orgId, ym);
+            
+            Map<String, Object> result = new HashMap<>();
+            result.put("success", true);
+            result.put("message", "Successfully rebuilt attendance for " + ym);
+            result.put("month", month);
+            result.put("year", year);
+            return ResponseEntity.ok(result);
+        } catch (Exception e) {
+            log.error("Error rebuilding attendance: {}", e.getMessage(), e);
+            Map<String, Object> result = new HashMap<>();
+            result.put("success", false);
+            result.put("error", e.getMessage());
+            return ResponseEntity.status(500).body(result);
+        }
     }
 
     // ==================== TEMPLATE DOWNLOAD ====================

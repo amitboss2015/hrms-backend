@@ -9,6 +9,7 @@ import java.util.List;
 
 public interface EmployeeShiftAssignmentRepository extends JpaRepository<EmployeeShiftAssignment, Long> {
   List<EmployeeShiftAssignment> findByEmployee(Employee employee);
+  List<EmployeeShiftAssignment> findByEmployee_Id(Long employeeId);
   List<EmployeeShiftAssignment> findByEmployee_EmpCode(String empCode);
   List<EmployeeShiftAssignment> findByEmployee_EmpCodeAndStartDateLessThanEqualAndEndDateGreaterThanEqual(String empCode, LocalDate end, LocalDate start);
     List<EmployeeShiftAssignment> findByShift_Code(String shiftCode);

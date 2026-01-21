@@ -35,6 +35,7 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
     private final EmployeeLeaveRepository leaveRepo;
     private final BiometricDeviceRepository deviceRepo;
     private final BiometricDeviceMappingRepository mappingRepo;
+    private final com.example.hrms.repo.EmployeeShiftAssignmentRepository shiftAssignmentRepo;
 
     private static final ZoneId DEFAULT_TZ = ZoneId.of("Asia/Kolkata");
     
@@ -158,8 +159,10 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
                 }
                 
                 String empCode = normalizeEmpCode(empCodeRaw);
-                // Use resolveEmployeeId for consistent lookup logic (supports device and fallback)
-                Long matchedEmployeeId = resolveEmployeeId(empCode, tenantId);
+                // Use resolveEmployeeWithType for consistent lookup logic with match type info
+                EmployeeResolution resolution = resolveEmployeeWithType(empCode, tenantId, null);
+                Long matchedEmployeeId = resolution.employeeId();
+                String matchType = resolution.matchType();
                 Optional<Employee> matchedEmployee = matchedEmployeeId != null 
                     ? employeeRepo.findById(matchedEmployeeId)
                     : Optional.empty();
@@ -203,6 +206,20 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
                     }
                 }
                 
+                // Check shift assignment for the import period
+                boolean hasShift = false;
+                String shiftCode = null;
+                if (matchedEmployee.isPresent()) {
+                    LocalDate monthStart = ymUsed.atDay(1);
+                    LocalDate monthEnd = ymUsed.atEndOfMonth();
+                    var shiftAssignments = shiftAssignmentRepo.findByEmployee_IdAndStartDateLessThanEqualAndEndDateGreaterThanEqual(
+                            matchedEmployee.get().getId(), monthEnd, monthStart);
+                    if (!shiftAssignments.isEmpty()) {
+                        hasShift = true;
+                        shiftCode = shiftAssignments.get(0).getShift().getCode();
+                    }
+                }
+                
                 // Add employee match
                 AttendanceImportPreview.EmployeeMatch match = AttendanceImportPreview.EmployeeMatch.builder()
                         .empCodeInFile(empCodeRaw)
@@ -212,6 +229,9 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
                         .matchedEmpCode(matchedEmployee.map(Employee::getEmpCode).orElse(null))
                         .matchedName(matchedEmployee.map(e -> e.getFirstName() + " " + (e.getLastName() != null ? e.getLastName() : "")).orElse(null))
                         .punchCount(empPunchCount)
+                        .hasShiftAssignment(hasShift)
+                        .shiftCode(shiftCode)
+                        .matchType(matchType) // EXACT, DEVICE_MAPPING, INTELLIGENT, or null
                         .build();
                 employeeMatches.add(match);
                 
@@ -232,10 +252,42 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
             int matchedCount = (int) employeeMatches.stream().filter(AttendanceImportPreview.EmployeeMatch::isMatched).count();
             int unmatchedCount = employeeMatches.size() - matchedCount;
             
+            // Count employees without shift assignments
+            int noShiftCount = (int) employeeMatches.stream()
+                    .filter(m -> m.isMatched() && !m.isHasShiftAssignment())
+                    .count();
+            
+            // Count intelligent matches (file code != system code)
+            int intelligentMatchCount = (int) employeeMatches.stream()
+                    .filter(m -> "INTELLIGENT".equals(m.getMatchType()))
+                    .count();
+            
+            // Build warnings list
+            List<String> warnings = new ArrayList<>();
+            if (unmatchedCount > 0) {
+                warnings.add("❌ " + unmatchedCount + " employee(s) not found in system - their attendance will be skipped");
+            }
+            if (intelligentMatchCount > 0) {
+                warnings.add("🔍 " + intelligentMatchCount + " employee(s) matched by intelligent code extraction (verify mapping)");
+                // List intelligent matches for review (first 5)
+                employeeMatches.stream()
+                        .filter(m -> "INTELLIGENT".equals(m.getMatchType()))
+                        .limit(5)
+                        .forEach(m -> warnings.add("  - File: '" + m.getEmpCodeInFile() + "' → System: '" + m.getMatchedEmpCode() + "' (" + m.getMatchedName() + ")"));
+            }
+            if (noShiftCount > 0) {
+                warnings.add("⚠️ " + noShiftCount + " employee(s) have no shift assignment - working hours may not be calculated correctly");
+                // List specific employees without shift (first 5)
+                employeeMatches.stream()
+                        .filter(m -> m.isMatched() && !m.isHasShiftAssignment())
+                        .limit(5)
+                        .forEach(m -> warnings.add("  - " + m.getMatchedName() + " (" + m.getMatchedEmpCode() + ") has no shift"));
+            }
+            
             String periodStr = ymUsed.getMonth().toString() + " " + ymUsed.getYear();
             
-            log.info("Preview complete: {} employees ({} matched, {} unmatched), {} punch records",
-                    employeeMatches.size(), matchedCount, unmatchedCount, totalPunchRecords);
+            log.info("Preview complete: {} employees ({} matched, {} unmatched, {} without shift), {} punch records",
+                    employeeMatches.size(), matchedCount, unmatchedCount, noShiftCount, totalPunchRecords);
             
             return AttendanceImportPreview.builder()
                     .valid(true)
@@ -254,6 +306,8 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
                     .punchesPerDay(punchesPerDay)
                     .sampleRows(sampleRows)
                     .duplicateExists(false)
+                    .warnings(warnings)
+                    .employeesWithoutShift(noShiftCount)
                     .build();
                     
         } catch (Exception e) {
@@ -555,6 +609,17 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
     // ========== Helper Methods ==========
     
     private record PunchInfo(LocalTime time, String type, boolean crossMidnight) {}
+    
+    /**
+     * Result of employee resolution with match type information.
+     */
+    private record EmployeeResolution(Long employeeId, String matchType) {
+        static EmployeeResolution notFound() { return new EmployeeResolution(null, null); }
+        static EmployeeResolution exact(Long id) { return new EmployeeResolution(id, "EXACT"); }
+        static EmployeeResolution deviceMapping(Long id) { return new EmployeeResolution(id, "DEVICE_MAPPING"); }
+        static EmployeeResolution intelligent(Long id) { return new EmployeeResolution(id, "INTELLIGENT"); }
+        boolean isFound() { return employeeId != null; }
+    }
 
     private Sheet findLogsSheet(Workbook wb) {
         // Try to find sheet named "Logs" or containing "log"
@@ -620,18 +685,38 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
         
         // If device is specified, try device-specific lookup first
         if (deviceId != null && tenantId != null) {
-            // Step 1: Try device-specific lookup
+            // Step 1: Try device-specific lookup (device_emp_code matches exactly)
             Optional<Employee> employee = employeeRepo.findByDeviceIdAndDeviceEmpCode(deviceId, empCode);
             if (employee.isPresent()) {
                 // Verify tenant for security
                 if (tenantId.equals(employee.get().getTenantId())) {
-                    log.debug("Found employee by device: deviceId={}, code={}, empId={}", 
+                    log.debug("Found employee by device mapping: deviceId={}, code={}, empId={}", 
                             deviceId, empCode, employee.get().getId());
                     return employee.get().getId();
                 }
             }
             
-            // Step 2: FALLBACK to tenant-wide emp_code lookup (for backward compatibility)
+            // Step 2: Try BiometricDeviceMapping table lookup
+            var mapping = mappingRepo.findActiveMapping(tenantId, deviceId, empCode);
+            if (mapping.isPresent()) {
+                log.debug("Found employee by BiometricDeviceMapping: deviceId={}, code={}, empId={}", 
+                        deviceId, empCode, mapping.get().getEmployee().getId());
+                return mapping.get().getEmployee().getId();
+            }
+            
+            // Step 3: INTELLIGENT MATCHING - Extract numeric part from device code
+            // Examples: "LADIES_59" -> "59", "MEN_32" -> "32", "OFFICE_123" -> "123"
+            String extractedCode = extractNumericEmployeeCode(empCode);
+            if (extractedCode != null && !extractedCode.equals(empCode)) {
+                Optional<Employee> extractedEmployee = employeeRepo.findByTenantIdAndEmpCode(tenantId, extractedCode);
+                if (extractedEmployee.isPresent()) {
+                    log.info("INTELLIGENT MATCH: Device code '{}' → extracted '{}' → Employee ID {}", 
+                            empCode, extractedCode, extractedEmployee.get().getId());
+                    return extractedEmployee.get().getId();
+                }
+            }
+            
+            // Step 4: FALLBACK to tenant-wide emp_code lookup (exact match)
             // This handles employees who were imported before the device feature was added
             Optional<Employee> fallbackEmployee = employeeRepo.findByTenantIdAndEmpCode(tenantId, empCode);
             if (fallbackEmployee.isPresent()) {
@@ -640,15 +725,144 @@ public class AttendanceImportServiceImpl implements AttendanceImportService {
                 return fallbackEmployee.get().getId();
             }
             
-            log.debug("No employee found for device={}, code={} (tried device lookup and fallback)", deviceId, empCode);
+            log.debug("No employee found for device={}, code={} (tried all matching strategies)", deviceId, empCode);
             return null;
         }
         
-        // No device specified - use direct emp_code lookup (backward compatible)
+        // No device specified - try intelligent matching
+        // Step 1: Direct emp_code lookup
         Optional<Employee> employee = tenantId != null 
             ? employeeRepo.findByTenantIdAndEmpCode(tenantId, empCode)
             : employeeRepo.findByEmpCode(empCode);
-        return employee.map(Employee::getId).orElse(null);
+        if (employee.isPresent()) {
+            return employee.get().getId();
+        }
+        
+        // Step 2: Try intelligent extraction (LADIES_59 -> 59)
+        String extractedCode = extractNumericEmployeeCode(empCode);
+        if (extractedCode != null && !extractedCode.equals(empCode)) {
+            Optional<Employee> extractedEmployee = tenantId != null 
+                ? employeeRepo.findByTenantIdAndEmpCode(tenantId, extractedCode)
+                : employeeRepo.findByEmpCode(extractedCode);
+            if (extractedEmployee.isPresent()) {
+                log.info("INTELLIGENT MATCH (no device): '{}' → extracted '{}' → Employee ID {}", 
+                        empCode, extractedCode, extractedEmployee.get().getId());
+                return extractedEmployee.get().getId();
+            }
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Resolve employee with match type information (for preview display).
+     */
+    private EmployeeResolution resolveEmployeeWithType(String empCode, String tenantId, Long deviceId) {
+        if (isBlank(empCode)) return EmployeeResolution.notFound();
+        
+        // If device is specified, try device-specific lookup first
+        if (deviceId != null && tenantId != null) {
+            // Step 1: Device mapping lookup
+            Optional<Employee> employee = employeeRepo.findByDeviceIdAndDeviceEmpCode(deviceId, empCode);
+            if (employee.isPresent() && tenantId.equals(employee.get().getTenantId())) {
+                return EmployeeResolution.deviceMapping(employee.get().getId());
+            }
+            
+            // Step 2: BiometricDeviceMapping table
+            var mapping = mappingRepo.findActiveMapping(tenantId, deviceId, empCode);
+            if (mapping.isPresent()) {
+                return EmployeeResolution.deviceMapping(mapping.get().getEmployee().getId());
+            }
+            
+            // Step 3: Intelligent extraction
+            String extractedCode = extractNumericEmployeeCode(empCode);
+            if (extractedCode != null && !extractedCode.equals(empCode)) {
+                Optional<Employee> extractedEmployee = employeeRepo.findByTenantIdAndEmpCode(tenantId, extractedCode);
+                if (extractedEmployee.isPresent()) {
+                    return EmployeeResolution.intelligent(extractedEmployee.get().getId());
+                }
+            }
+            
+            // Step 4: Exact match fallback
+            Optional<Employee> fallbackEmployee = employeeRepo.findByTenantIdAndEmpCode(tenantId, empCode);
+            if (fallbackEmployee.isPresent()) {
+                return EmployeeResolution.exact(fallbackEmployee.get().getId());
+            }
+            
+            return EmployeeResolution.notFound();
+        }
+        
+        // No device - try exact first, then intelligent
+        Optional<Employee> employee = tenantId != null 
+            ? employeeRepo.findByTenantIdAndEmpCode(tenantId, empCode)
+            : employeeRepo.findByEmpCode(empCode);
+        if (employee.isPresent()) {
+            return EmployeeResolution.exact(employee.get().getId());
+        }
+        
+        // Try intelligent extraction
+        String extractedCode = extractNumericEmployeeCode(empCode);
+        if (extractedCode != null && !extractedCode.equals(empCode)) {
+            Optional<Employee> extractedEmployee = tenantId != null 
+                ? employeeRepo.findByTenantIdAndEmpCode(tenantId, extractedCode)
+                : employeeRepo.findByEmpCode(extractedCode);
+            if (extractedEmployee.isPresent()) {
+                return EmployeeResolution.intelligent(extractedEmployee.get().getId());
+            }
+        }
+        
+        return EmployeeResolution.notFound();
+    }
+    
+    /**
+     * Extract numeric employee code from device-specific codes.
+     * 
+     * Examples:
+     * - "LADIES_59" -> "59"
+     * - "MEN_32" -> "32" 
+     * - "OFFICE_123" -> "123"
+     * - "L_10" -> "10"
+     * - "59" -> "59" (unchanged)
+     * - "EMP001" -> "001" or null
+     * 
+     * Strategy:
+     * 1. If code contains underscore, take the part after last underscore
+     * 2. If that part is numeric, return it
+     * 3. Otherwise, try to extract trailing numeric portion
+     */
+    private String extractNumericEmployeeCode(String deviceCode) {
+        if (isBlank(deviceCode)) return null;
+        
+        String code = deviceCode.trim();
+        
+        // Strategy 1: Split by underscore and take last part
+        if (code.contains("_")) {
+            String[] parts = code.split("_");
+            String lastPart = parts[parts.length - 1];
+            // Check if last part is purely numeric
+            if (lastPart.matches("^\\d+$")) {
+                // Remove leading zeros for consistency (but keep at least one digit)
+                return lastPart.replaceFirst("^0+(?!$)", "");
+            }
+        }
+        
+        // Strategy 2: Extract trailing numeric portion
+        // "EMP001" -> "001", "A123B" -> null (not trailing)
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\d+)$").matcher(code);
+        if (matcher.find()) {
+            String numericPart = matcher.group(1);
+            // Remove leading zeros
+            return numericPart.replaceFirst("^0+(?!$)", "");
+        }
+        
+        // Strategy 3: Extract any numeric portion (first occurrence)
+        matcher = java.util.regex.Pattern.compile("(\\d+)").matcher(code);
+        if (matcher.find()) {
+            String numericPart = matcher.group(1);
+            return numericPart.replaceFirst("^0+(?!$)", "");
+        }
+        
+        return null;
     }
 
     private YearMonth parseYearMonthFromPeriod(String period) {

@@ -60,7 +60,7 @@ public interface AttendanceDayRepository extends JpaRepository<AttendanceDay, Lo
      */
     @Modifying
     @Query("DELETE FROM AttendanceDay d WHERE d.tenantId = :tenantId AND d.workDate >= :fromDate AND d.workDate <= :toDate")
-    void deleteByTenantIdAndWorkDateBetween(
+    int deleteByTenantIdAndWorkDateBetween(
         @Param("tenantId") String tenantId, 
         @Param("fromDate") LocalDate fromDate, 
         @Param("toDate") LocalDate toDate);

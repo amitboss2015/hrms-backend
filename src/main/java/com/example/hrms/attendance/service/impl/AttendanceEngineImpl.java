@@ -28,8 +28,10 @@ import com.example.hrms.payroll.service.SalaryOvertimeConfigService;
 import com.example.hrms.leave.repo.EmployeeLeaveRepository;
 import com.example.hrms.leave.domain.EmployeeLeave;
 import com.example.hrms.leave.domain.enums.LeaveStatus;
+import com.example.hrms.tenant.TenantContext;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -42,6 +44,7 @@ import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class AttendanceEngineImpl implements AttendanceEngine {
 
     private final AttendancePunchRepository punchRepo;
@@ -72,8 +75,36 @@ public class AttendanceEngineImpl implements AttendanceEngine {
     }
 
     @Override
+    @Transactional
     public void rebuildOrgMonth(Long orgId, YearMonth ym) {
-        // iterate employees and call rebuildEmployeeMonth(orgId, empId, ym) if needed
+        // Get tenant ID from context
+        String tenantId = TenantContext.getTenantId();
+        if (tenantId == null) {
+            log.warn("No tenant context for rebuildOrgMonth, orgId={}", orgId);
+            return;
+        }
+        
+        // Get all active employees for the tenant
+        List<Employee> employees = employeeRepo.findByTenantIdAndStatus(
+                tenantId, com.example.hrms.domain.enums.EmployeeStatus.ACTIVE);
+        
+        if (employees.isEmpty()) {
+            log.info("No active employees for tenant={}, skipping rebuild", tenantId);
+            return;
+        }
+        
+        // Extract employee IDs
+        List<Long> employeeIds = employees.stream()
+                .map(Employee::getId)
+                .collect(Collectors.toList());
+        
+        log.info("Rebuilding attendance for {} employees, tenant={}, month={}", 
+                employeeIds.size(), tenantId, ym);
+        
+        // Call the batch rebuild
+        rebuildEmployeesMonthBatch(orgId, tenantId, employeeIds, ym);
+        
+        log.info("Rebuild complete for tenant={}, month={}", tenantId, ym);
     }
 
     /**
@@ -91,8 +122,12 @@ public class AttendanceEngineImpl implements AttendanceEngine {
     @Transactional
     public void rebuildEmployeesMonthBatch(Long orgId, String tenantId, List<Long> employeeIds, YearMonth ym) {
         if (employeeIds == null || employeeIds.isEmpty()) {
+            log.warn("rebuildEmployeesMonthBatch: No employee IDs provided");
             return;
         }
+        
+        log.info("rebuildEmployeesMonthBatch: Processing {} employees for orgId={}, tenantId={}, month={}",
+                employeeIds.size(), orgId, tenantId, ym);
         
         LocalDate startDate = ym.atDay(1);
         LocalDate endDate = ym.atEndOfMonth();
@@ -103,6 +138,7 @@ public class AttendanceEngineImpl implements AttendanceEngine {
         for (Employee e : employeeRepo.findAllById(employeeIds)) {
             employeeMap.put(e.getId(), e);
         }
+        log.info("Loaded {} employees from database", employeeMap.size());
         
         // Pre-fetch ALL punches for all employees for the entire month in ONE query
         // Window: 6 AM on day 1 to 6 AM on day after end of month
@@ -113,22 +149,21 @@ public class AttendanceEngineImpl implements AttendanceEngine {
         List<AttendancePunch> allPunches = punchRepo.findByEmployeeIdInAndPunchTsUtcBetweenOrderByEmployeeIdAscPunchTsUtcAsc(
                 employeeIds, fromUtc, toUtc);
         
+        log.info("Loaded {} punches for date range {} to {}", allPunches.size(), startDate, endDate);
+        
         for (AttendancePunch p : allPunches) {
             punchesByEmployee.computeIfAbsent(p.getEmployeeId(), k -> new ArrayList<>()).add(p);
         }
         
         // Pre-fetch ALL shift assignments for all employees
         Map<Long, List<EmployeeShiftAssignment>> shiftAssignmentsByEmployee = new HashMap<>();
+        int totalShiftAssignments = 0;
         for (Long empId : employeeIds) {
-            Employee stub = new Employee();
-            try {
-                Method m = findMethod(Employee.class, "setId", Long.class);
-                if (m != null) m.invoke(stub, empId);
-            } catch (Exception ignore) {}
-            
-            List<EmployeeShiftAssignment> assignments = empShiftRepo.findByEmployee(stub);
+            List<EmployeeShiftAssignment> assignments = empShiftRepo.findByEmployee_Id(empId);
             shiftAssignmentsByEmployee.put(empId, assignments != null ? assignments : List.of());
+            totalShiftAssignments += (assignments != null ? assignments.size() : 0);
         }
+        log.info("Loaded {} shift assignments for {} employees", totalShiftAssignments, employeeIds.size());
         
         // Pre-fetch approved leaves for all employees for the month
         Map<String, Set<LocalDate>> leavesByEmpCode = new HashMap<>();
@@ -272,6 +307,86 @@ public class AttendanceEngineImpl implements AttendanceEngine {
                     status = "PRESENT";
                 }
                 
+                // ========= Late/Early calculation with Rounding =========
+                boolean isLateIn = false;
+                boolean isEarlyOut = false;
+                int lateByMins = 0;
+                int earlyByMins = 0;
+                LocalDateTime roundedIn = null;
+                LocalDateTime roundedOut = null;
+                String shiftCode = null;
+                
+                if (primaryShift != null && firstInLocal != null && !isOvertimeDay) {
+                    shiftCode = primaryShift.getCode();
+                    LocalTime shiftStart = primaryShift.getStartTime();
+                    LocalTime shiftEnd = primaryShift.getEndTime();
+                    RoundingRule rounding = primaryShift.getRounding() != null ? primaryShift.getRounding() : RoundingRule.NONE;
+                    int roundingMins = getRoundingMinutes(rounding);
+                    
+                    LocalTime actualIn = firstInLocal.toLocalTime();
+                    
+                    // First apply rounding to the actual IN time
+                    if (roundingMins > 0) {
+                        int minuteOfDay = actualIn.getHour() * 60 + actualIn.getMinute();
+                        int shiftStartMinute = shiftStart.getHour() * 60 + shiftStart.getMinute();
+                        
+                        // If arrived after shift start, round UP
+                        if (minuteOfDay > shiftStartMinute) {
+                            int roundedMinute = ((minuteOfDay + roundingMins - 1) / roundingMins) * roundingMins;
+                            roundedIn = LocalDateTime.of(date, LocalTime.of(roundedMinute / 60, roundedMinute % 60));
+                        } else {
+                            roundedIn = LocalDateTime.of(date, shiftStart);
+                        }
+                    } else {
+                        roundedIn = firstInLocal;
+                    }
+                    
+                    // Calculate late minutes based on rounded time vs shift start
+                    LocalTime roundedInTime = roundedIn.toLocalTime();
+                    if (roundedInTime.isAfter(shiftStart)) {
+                        isLateIn = true;
+                        lateByMins = (int) Duration.between(
+                            LocalDateTime.of(date, shiftStart), 
+                            roundedIn
+                        ).toMinutes();
+                    }
+                    
+                    // Check if early out - apply rounding
+                    if (lastOutLocal != null) {
+                        LocalTime actualOut = lastOutLocal.toLocalTime();
+                        LocalDate outDate = lastOutLocal.toLocalDate();
+                        LocalDateTime expectedEnd = crossedMidnight 
+                            ? LocalDateTime.of(date.plusDays(1), shiftEnd)
+                            : LocalDateTime.of(date, shiftEnd);
+                        
+                        if (roundingMins > 0) {
+                            int minuteOfDay = actualOut.getHour() * 60 + actualOut.getMinute();
+                            int shiftEndMinute = shiftEnd.getHour() * 60 + shiftEnd.getMinute();
+                            
+                            if (minuteOfDay < shiftEndMinute) {
+                                int roundedMinute = (minuteOfDay / roundingMins) * roundingMins;
+                                roundedOut = LocalDateTime.of(outDate, LocalTime.of(roundedMinute / 60, roundedMinute % 60));
+                            } else {
+                                roundedOut = expectedEnd;
+                            }
+                        } else {
+                            roundedOut = lastOutLocal;
+                        }
+                        
+                        if (roundedOut.isBefore(expectedEnd)) {
+                            isEarlyOut = true;
+                            earlyByMins = (int) Duration.between(roundedOut, expectedEnd).toMinutes();
+                        }
+                    }
+                    
+                    // Recalculate work minutes using rounded times if rounding is applied
+                    if (roundingMins > 0 && roundedIn != null && roundedOut != null) {
+                        long roundedWorkMins = Duration.between(roundedIn, roundedOut).toMinutes();
+                        int breakMins = primaryShift.getBreakMins() != null ? primaryShift.getBreakMins() : 0;
+                        dayWorkTotal = (int) Math.max(0, roundedWorkMins - breakMins);
+                    }
+                }
+                
                 allDays.add(AttendanceDay.builder()
                         .tenantId(empTenantId)
                         .orgId(orgId)
@@ -282,7 +397,14 @@ public class AttendanceEngineImpl implements AttendanceEngine {
                         .totalOTApprovedMin(0)
                         .firstIn(firstInLocal)
                         .lastOut(lastOutLocal)
+                        .roundedIn(roundedIn)
+                        .roundedOut(roundedOut)
+                        .isLateIn(isLateIn)
+                        .isEarlyOut(isEarlyOut)
+                        .lateByMins(lateByMins)
+                        .earlyByMins(earlyByMins)
                         .punchCount(dayPunches.size())
+                        .shiftCodes(shiftCode)
                         .status(status)
                         .missingPunch(missingPunch)
                         .missingPunchType(missingPunchType)
@@ -606,67 +728,75 @@ public class AttendanceEngineImpl implements AttendanceEngine {
             int roundingMins = getRoundingMinutes(rounding);
             
             LocalTime actualIn = firstInLocal.toLocalTime();
-            LocalTime graceEndTime = shiftStart.plusMinutes(graceIn);
             
-            // Check if late (arrived after shift start + grace period)
-            if (actualIn.isAfter(graceEndTime)) {
-                isLateIn = true;
+            // First apply rounding to the actual IN time
+            if (roundingMins > 0) {
+                // Round UP to next rounding interval for IN time
+                // Example: 9:01-9:14 -> 9:15 (with 15 min rounding)
+                int minuteOfDay = actualIn.getHour() * 60 + actualIn.getMinute();
+                int shiftStartMinute = shiftStart.getHour() * 60 + shiftStart.getMinute();
                 
-                // Calculate late minutes and apply rounding
-                // Rounding UP for late arrivals: 9:01-9:14 -> 9:15 (with 15 min rounding)
-                if (roundingMins > 0) {
-                    // Round UP to next rounding interval
-                    int minuteOfDay = actualIn.getHour() * 60 + actualIn.getMinute();
+                // If arrived after shift start, round UP
+                if (minuteOfDay > shiftStartMinute) {
                     int roundedMinute = ((minuteOfDay + roundingMins - 1) / roundingMins) * roundingMins;
                     roundedIn = LocalDateTime.of(date, LocalTime.of(roundedMinute / 60, roundedMinute % 60));
-                    
-                    // Late minutes = rounded time - shift start
-                    lateByMins = (int) Duration.between(
-                        LocalDateTime.of(date, shiftStart), 
-                        roundedIn
-                    ).toMinutes();
                 } else {
-                    roundedIn = firstInLocal;
-                    lateByMins = (int) Duration.between(
-                        LocalDateTime.of(date, shiftStart), 
-                        firstInLocal
-                    ).toMinutes();
+                    // Arrived on or before shift start - use shift start as rounded time
+                    roundedIn = LocalDateTime.of(date, shiftStart);
                 }
             } else {
-                roundedIn = firstInLocal; // No rounding needed if on time
+                roundedIn = firstInLocal;
             }
             
-            // Check if early out (left before shift end - grace period)
+            // Calculate late minutes based on rounded time vs shift start
+            LocalTime roundedInTime = roundedIn.toLocalTime();
+            if (roundedInTime.isAfter(shiftStart)) {
+                isLateIn = true;
+                lateByMins = (int) Duration.between(
+                    LocalDateTime.of(date, shiftStart), 
+                    roundedIn
+                ).toMinutes();
+            } else {
+                // Not late if rounded time equals shift start
+                roundedIn = LocalDateTime.of(date, shiftStart);
+            }
+            
+            // Check if early out - apply rounding first
             if (lastOutLocal != null) {
                 LocalTime actualOut = lastOutLocal.toLocalTime();
                 LocalDate outDate = lastOutLocal.toLocalDate();
-                LocalTime graceStartTime = shiftEnd.minusMinutes(graceOut);
                 
                 // Handle cross-midnight shifts
                 LocalDateTime expectedEnd = crossedMidnight 
                     ? LocalDateTime.of(date.plusDays(1), shiftEnd)
                     : LocalDateTime.of(date, shiftEnd);
-                LocalDateTime graceStart = expectedEnd.minusMinutes(graceOut);
                 
-                if (lastOutLocal.isBefore(graceStart)) {
-                    isEarlyOut = true;
+                // First apply rounding to the actual OUT time
+                if (roundingMins > 0) {
+                    // Round DOWN for OUT time (penalize early departure)
+                    // Example: 5:16-5:29 -> 5:15 (with 15 min rounding)
+                    int minuteOfDay = actualOut.getHour() * 60 + actualOut.getMinute();
+                    int shiftEndMinute = shiftEnd.getHour() * 60 + shiftEnd.getMinute();
                     
-                    // Calculate early minutes and apply rounding
-                    // Rounding DOWN for early departures: 5:16-5:29 -> 5:15 (with 15 min rounding)
-                    if (roundingMins > 0) {
-                        // Round DOWN to previous rounding interval
-                        int minuteOfDay = actualOut.getHour() * 60 + actualOut.getMinute();
+                    // If left before shift end, round DOWN
+                    if (minuteOfDay < shiftEndMinute) {
                         int roundedMinute = (minuteOfDay / roundingMins) * roundingMins;
                         roundedOut = LocalDateTime.of(outDate, LocalTime.of(roundedMinute / 60, roundedMinute % 60));
-                        
-                        // Early minutes = shift end - rounded time
-                        earlyByMins = (int) Duration.between(roundedOut, expectedEnd).toMinutes();
                     } else {
-                        roundedOut = lastOutLocal;
-                        earlyByMins = (int) Duration.between(lastOutLocal, expectedEnd).toMinutes();
+                        // Left at or after shift end - use shift end as rounded time
+                        roundedOut = expectedEnd;
                     }
                 } else {
-                    roundedOut = lastOutLocal; // No rounding needed if on time
+                    roundedOut = lastOutLocal;
+                }
+                
+                // Calculate early minutes based on rounded time vs shift end
+                if (roundedOut.isBefore(expectedEnd)) {
+                    isEarlyOut = true;
+                    earlyByMins = (int) Duration.between(roundedOut, expectedEnd).toMinutes();
+                } else {
+                    // Not early if rounded time equals or exceeds shift end
+                    roundedOut = expectedEnd;
                 }
             }
             
@@ -760,16 +890,9 @@ public class AttendanceEngineImpl implements AttendanceEngine {
     /* ================= helpers: shifts & segments ================= */
 
     private List<ShiftWindow> shiftWindowsFor(Long employeeId, LocalDate date) {
-        Employee stub = new Employee();
-        try {
-            Method m = findMethod(Employee.class, "setId", Long.class);
-            if (m != null) m.invoke(stub, employeeId);
-        } catch (Exception ignore) {
-        }
-
         List<EmployeeShiftAssignment> all = Collections.emptyList();
         try {
-            all = empShiftRepo.findByEmployee(stub);
+            all = empShiftRepo.findByEmployee_Id(employeeId);
         } catch (Exception ex) {
             all = List.of();
         }
@@ -830,19 +953,40 @@ public class AttendanceEngineImpl implements AttendanceEngine {
         List<Span> out = new ArrayList<>();
         if (pts.isEmpty()) return out;
         
-        // For proper IN/OUT pairing, process punches in pairs
-        // Each pair represents a work session (IN to OUT)
-        for (int i = 0; i < pts.size() - 1; i += 2) {
-            Instant inTime = pts.get(i);
-            Instant outTime = pts.get(i + 1);
-            // Only add if out is after in
-            if (outTime.isAfter(inTime)) {
-                out.add(new Span(inTime, outTime));
+        // For working hours calculation:
+        // - First punch = IN time (shift start)
+        // - Last punch = OUT time (shift end)
+        // 
+        // With 3 punches like 08:56, 09:15, 17:34:
+        // - The middle punch (09:15) is likely spurious/duplicate
+        // - Working hours should be 17:34 - 08:56 = 8h 38m
+        //
+        // For odd number of punches (3, 5, 7...):
+        // - Use FIRST and LAST punch as the work span
+        // - This captures full working hours even with spurious middle punches
+        //
+        // For even number of punches (2, 4, 6...):
+        // - Process as pairs: (1,2), (3,4), etc.
+        // - Each pair represents an IN/OUT session
+        
+        if (pts.size() % 2 != 0) {
+            // Odd number of punches: use first-to-last as single span
+            // This handles cases like: IN, spurious_punch, OUT
+            Instant firstIn = pts.get(0);
+            Instant lastOut = pts.get(pts.size() - 1);
+            if (lastOut.isAfter(firstIn)) {
+                out.add(new Span(firstIn, lastOut));
+            }
+        } else {
+            // Even number of punches: pair them properly
+            for (int i = 0; i < pts.size() - 1; i += 2) {
+                Instant inTime = pts.get(i);
+                Instant outTime = pts.get(i + 1);
+                if (outTime.isAfter(inTime)) {
+                    out.add(new Span(inTime, outTime));
+                }
             }
         }
-        
-        // If odd number of punches, the last one is orphan (IN without OUT)
-        // Don't create a span for it as it has no duration
         
         return out;
     }

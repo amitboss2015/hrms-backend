@@ -45,6 +45,10 @@ public class AttendanceImportPreview {
     private Long existingBatchId;
     private String existingBatchDate;
     
+    // Warnings for validation (shift assignment, etc.)
+    private List<String> warnings;
+    private int employeesWithoutShift;
+    
     /**
      * Employee match info showing which employees were found/not found
      */
@@ -61,6 +65,9 @@ public class AttendanceImportPreview {
         private String matchedEmpCode;
         private String matchedName;
         private int punchCount;
+        private boolean hasShiftAssignment; // Shift assigned for the import period
+        private String shiftCode; // Assigned shift code (if any)
+        private String matchType; // How the match was made: EXACT, DEVICE_MAPPING, INTELLIGENT, null if not matched
     }
     
     /**

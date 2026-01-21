@@ -9,6 +9,8 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.time.Instant;
+
+import java.time.Instant;
 import java.util.List;
 
 @Repository
@@ -47,6 +49,16 @@ public interface AttendancePunchRepository extends JpaRepository<AttendancePunch
            "AND p.punchTsUtc BETWEEN :start AND :end ORDER BY p.employeeId, p.punchTsUtc ASC")
     List<AttendancePunch> findByEmployeeIdInAndPunchTsUtcBetweenOrderByEmployeeIdAscPunchTsUtcAsc(
             @Param("employeeIds") List<Long> employeeIds,
+            @Param("start") Instant start,
+            @Param("end") Instant end);
+    
+    /**
+     * Delete punches by org and time range
+     */
+    @Modifying
+    @Query("DELETE FROM AttendancePunch p WHERE p.orgId = :orgId AND p.punchTsUtc >= :start AND p.punchTsUtc < :end")
+    int deleteByOrgIdAndPunchTsUtcBetween(
+            @Param("orgId") Long orgId,
             @Param("start") Instant start,
             @Param("end") Instant end);
 }
