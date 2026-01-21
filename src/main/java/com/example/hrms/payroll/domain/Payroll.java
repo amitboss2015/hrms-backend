@@ -182,9 +182,13 @@ public class Payroll {
     }
 
     /**
-     * Calculate all totals based on the payment sheet formula:
+     * Calculate all totals based on the payment sheet formula from Excel:
      * GROSS SALARY = WORKING DAY AMOUNT + OT DAY AMOUNT + OT HR AMOUNT + HOUSE RENT + MEDICAL EXP + BONUS + INCENTIVE
-     * NET SALARY = GROSS SALARY - ESI - PF OWN - ADV - DUE - OTHER DEDUCTIONS
+     * 
+     * Excel formula for NET SALARY: =GROSS - ESI - PF_Own - PF_Company - ADV + DUE
+     * Where:
+     *   - ESI, PF_Own, PF_Company, ADV are DEDUCTED
+     *   - DUE is ADDED (dues owed TO employee from previous periods)
      * 
      * ADV column should include loanDeduction + manual advance.
      * If advance < loanDeduction (legacy data), we use the greater value to ensure loan is deducted.
@@ -212,20 +216,59 @@ public class Payroll {
             this.advance = totalLoanDeductions;
         }
 
-        // Calculate total deductions
-        // ADV column includes: fixed EMI + flexible loan deductions + any manual advances
-        // DUE column: previous month's outstanding dues
+        // Calculate total deductions (for display purposes)
+        // This shows all amounts being deducted from gross
+        // Formula: ESI + PF Employee + PF Company + ADV + Professional Tax + TDS + Other Deductions
         this.totalDeductions = safeAdd(esiEmployee)
                 .add(safeAdd(pfEmployee))
+                .add(safeAdd(pfCompany))     // PF Company is also deducted per Excel formula
                 .add(effectiveAdvance)       // ADV includes all loan deductions
-                .add(safeAdd(due))           // DUE for previous outstanding
                 .add(safeAdd(professionalTax))
                 .add(safeAdd(tds))
                 .add(safeAdd(otherDeduction));
 
-        // Calculate net salary
-        this.netSalary = grossSalary.subtract(totalDeductions);
+        // Calculate net salary using Excel formula:
+        // NET = GROSS - ESI - PF_Own - PF_Company - ADV + DUE
+        // DUE is ADDED (money owed TO employee)
+        this.netSalary = grossSalary
+                .subtract(totalDeductions)   // Subtract all deductions
+                .add(safeAdd(due));          // ADD due (money owed to employee)
+        
+        // Auto-generate REMARKS with calculation breakdown (if not manually set)
+        // Format: GROSS - ADV + DUE = NET (only shows non-zero components)
+        if (this.remarks == null || this.remarks.isEmpty() || this.remarks.startsWith("Auto:")) {
+            this.remarks = generateRemarksBreakdown(effectiveAdvance);
+        }
+        
         this.updatedAt = LocalDateTime.now();
+    }
+    
+    /**
+     * Generate remarks showing payment breakdown
+     * Format examples:
+     *   - "8196" (no deductions/dues)
+     *   - "12093 -4900" (with advance)
+     *   - "8196 +500" (with dues)
+     *   - "12093 -4900 +500" (with both)
+     */
+    private String generateRemarksBreakdown(BigDecimal effectiveAdvance) {
+        StringBuilder sb = new StringBuilder();
+        
+        // Start with gross
+        sb.append(grossSalary != null ? grossSalary.setScale(0, java.math.RoundingMode.HALF_UP).toPlainString() : "0");
+        
+        // Subtract advance if > 0
+        if (effectiveAdvance != null && effectiveAdvance.compareTo(BigDecimal.ZERO) > 0) {
+            sb.append(" -").append(effectiveAdvance.setScale(0, java.math.RoundingMode.HALF_UP).toPlainString());
+        }
+        
+        // Add due if > 0
+        BigDecimal dueAmount = safeAdd(due);
+        if (dueAmount.compareTo(BigDecimal.ZERO) > 0) {
+            sb.append(" +").append(dueAmount.setScale(0, java.math.RoundingMode.HALF_UP).toPlainString());
+        }
+        
+        return sb.toString();
     }
 
     private BigDecimal safeAdd(BigDecimal value) {

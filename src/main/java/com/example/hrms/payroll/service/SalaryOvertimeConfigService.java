@@ -123,6 +123,16 @@ public class SalaryOvertimeConfigService {
             config.setHalfDayMinHours(updatedConfig.getHalfDayMinHours());
             config.setFullDayMinHours(updatedConfig.getFullDayMinHours());
             
+            // Statutory Deduction Rates
+            config.setEsiEmployeeRate(updatedConfig.getEsiEmployeeRate());
+            config.setEsiEmployerRate(updatedConfig.getEsiEmployerRate());
+            config.setEsiWageCeiling(updatedConfig.getEsiWageCeiling());
+            config.setPfEmployeeRate(updatedConfig.getPfEmployeeRate());
+            config.setPfEmployerRate(updatedConfig.getPfEmployerRate());
+            config.setPfWageCeiling(updatedConfig.getPfWageCeiling());
+            config.setPfCalculationBase(updatedConfig.getPfCalculationBase());
+            config.setProfessionalTaxAmount(updatedConfig.getProfessionalTaxAmount());
+            
             config.setActive(true);
             config.setUpdatedAt(LocalDateTime.now());
         } else {
