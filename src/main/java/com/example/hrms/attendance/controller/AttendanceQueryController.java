@@ -1,14 +1,17 @@
 package com.example.hrms.attendance.controller;
 
 import com.example.hrms.attendance.domain.AttendanceDay;
+import com.example.hrms.attendance.domain.ImportBatch;
 import com.example.hrms.attendance.dto.DailyPunchLogDTO;
 import com.example.hrms.attendance.dto.MonthlySummaryDTO;
 import com.example.hrms.attendance.dto.SummaryRowDTO;
 import com.example.hrms.attendance.repo.AttendanceDayRepository;
+import com.example.hrms.attendance.repo.ImportBatchRepository;
 import com.example.hrms.attendance.service.AttendanceQueryService;
 import com.example.hrms.attendance.service.AttendanceSummaryService;
 import com.example.hrms.domain.Employee;
 import com.example.hrms.repo.EmployeeRepository;
+import com.example.hrms.repo.ShiftRepository;
 import com.example.hrms.tenant.TenantContext;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -30,6 +33,8 @@ public class AttendanceQueryController {
     private final AttendanceSummaryService summaryService;
     private final EmployeeRepository employeeRepository;
     private final AttendanceDayRepository attendanceDayRepository;
+    private final ImportBatchRepository importBatchRepository;
+    private final ShiftRepository shiftRepository;
     
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm");
 
@@ -100,6 +105,113 @@ public class AttendanceQueryController {
     /**
      * Convert tenant ID (String) to org ID (Long) for multi-tenancy.
      */
+    /**
+     * Dashboard Statistics API - Returns attendance data for the latest uploaded month
+     * This endpoint is designed for the main dashboard to show relevant monthly data
+     */
+    @GetMapping("/dashboard-stats")
+    public ResponseEntity<Map<String, Object>> getDashboardStats() {
+        String tenantId = TenantContext.getTenantId();
+        Long orgId = getOrgIdFromTenant(tenantId);
+        
+        Map<String, Object> stats = new LinkedHashMap<>();
+        
+        // Get latest import batch to determine which month to show
+        Optional<ImportBatch> latestBatch = importBatchRepository.findFirstByOrgIdOrderByYearDescMonthDescUploadedAtDesc(orgId);
+        
+        int month, year;
+        boolean hasAttendanceData = false;
+        String monthName = "";
+        
+        if (latestBatch.isPresent()) {
+            ImportBatch batch = latestBatch.get();
+            month = batch.getMonth();
+            year = batch.getYear();
+            hasAttendanceData = true;
+            monthName = java.time.Month.of(month).name().charAt(0) + 
+                       java.time.Month.of(month).name().substring(1).toLowerCase() + " " + year;
+        } else {
+            // No attendance data - use current month as placeholder
+            java.time.YearMonth now = java.time.YearMonth.now();
+            month = now.getMonthValue();
+            year = now.getYear();
+            monthName = now.getMonth().name().charAt(0) + 
+                       now.getMonth().name().substring(1).toLowerCase() + " " + year;
+        }
+        
+        stats.put("month", month);
+        stats.put("year", year);
+        stats.put("monthName", monthName);
+        stats.put("hasAttendanceData", hasAttendanceData);
+        
+        // Get employee counts
+        List<Employee> employees = employeeRepository.findByTenantId(tenantId);
+        long totalEmployees = employees.size();
+        long activeEmployees = employees.stream()
+                .filter(e -> e.getStatus() != null && e.getStatus().name().equals("ACTIVE"))
+                .count();
+        
+        stats.put("totalEmployees", totalEmployees);
+        stats.put("activeEmployees", activeEmployees);
+        
+        // Get shift count
+        long totalShifts = shiftRepository.countByTenantId(tenantId);
+        stats.put("totalShifts", totalShifts);
+        
+        if (hasAttendanceData) {
+            // Get attendance summary for the latest month
+            List<MonthlySummaryDTO> summary = summaryService.getSummary(year, month, orgId);
+            
+            int totalPresent = 0, totalAbsent = 0, totalLate = 0, totalHalfDays = 0;
+            int totalOtDays = 0, totalWorkMinutes = 0;
+            
+            for (MonthlySummaryDTO emp : summary) {
+                totalPresent += emp.getPresentDays() != null ? emp.getPresentDays() : 0;
+                totalAbsent += emp.getAbsentDays() != null ? emp.getAbsentDays() : 0;
+                totalLate += emp.getLateDays() != null ? emp.getLateDays() : 0;
+                totalHalfDays += emp.getHalfDays() != null ? emp.getHalfDays() : 0;
+                totalOtDays += emp.getOtDays() != null ? emp.getOtDays() : 0;
+                totalWorkMinutes += emp.getTotalWorkMinutes() != null ? emp.getTotalWorkMinutes() : 0;
+            }
+            
+            stats.put("totalPresentDays", totalPresent);
+            stats.put("totalAbsentDays", totalAbsent);
+            stats.put("totalLateDays", totalLate);
+            stats.put("totalHalfDays", totalHalfDays);
+            stats.put("totalOtDays", totalOtDays);
+            stats.put("totalWorkHours", totalWorkMinutes / 60);
+            stats.put("employeesWithData", summary.size());
+            
+            // Calculate averages
+            int daysInMonth = java.time.YearMonth.of(year, month).lengthOfMonth();
+            double avgAttendanceRate = 0;
+            if (summary.size() > 0 && daysInMonth > 0) {
+                avgAttendanceRate = (double) totalPresent / (summary.size() * daysInMonth) * 100;
+            }
+            stats.put("attendanceRate", Math.round(avgAttendanceRate * 10) / 10.0);
+            
+            // Per-employee averages for the month
+            stats.put("avgPresentDays", summary.size() > 0 ? Math.round((double) totalPresent / summary.size() * 10) / 10.0 : 0);
+            stats.put("avgAbsentDays", summary.size() > 0 ? Math.round((double) totalAbsent / summary.size() * 10) / 10.0 : 0);
+            stats.put("avgLateDays", summary.size() > 0 ? Math.round((double) totalLate / summary.size() * 10) / 10.0 : 0);
+            
+        } else {
+            stats.put("totalPresentDays", 0);
+            stats.put("totalAbsentDays", 0);
+            stats.put("totalLateDays", 0);
+            stats.put("totalHalfDays", 0);
+            stats.put("totalOtDays", 0);
+            stats.put("totalWorkHours", 0);
+            stats.put("employeesWithData", 0);
+            stats.put("attendanceRate", 0);
+            stats.put("avgPresentDays", 0);
+            stats.put("avgAbsentDays", 0);
+            stats.put("avgLateDays", 0);
+        }
+        
+        return ResponseEntity.ok(stats);
+    }
+
     private Long getOrgIdFromTenant(String tenantId) {
         if (tenantId == null || tenantId.isEmpty()) {
             return 1L;

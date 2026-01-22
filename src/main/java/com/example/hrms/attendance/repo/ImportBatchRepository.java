@@ -41,4 +41,15 @@ public interface ImportBatchRepository extends JpaRepository<ImportBatch, Long> 
             @org.springframework.data.repository.query.Param("orgId") Long orgId,
             @org.springframework.data.repository.query.Param("year") Integer year,
             @org.springframework.data.repository.query.Param("month") Integer month);
+    
+    /**
+     * Find the most recent import batch for an organization.
+     * Returns the latest uploaded batch to determine latest attendance period.
+     */
+    Optional<ImportBatch> findFirstByOrgIdOrderByYearDescMonthDescUploadedAtDesc(Long orgId);
+    
+    /**
+     * Find all import batches for specific devices in a given org, month, and year.
+     */
+    List<ImportBatch> findByOrgIdAndMonthAndYearAndDeviceIdIn(Long orgId, Integer month, Integer year, List<Long> deviceIds);
 }
