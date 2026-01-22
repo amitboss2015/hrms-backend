@@ -162,24 +162,24 @@ public class AttendanceQueryController {
             // Get attendance summary for the latest month
             List<MonthlySummaryDTO> summary = summaryService.getSummary(year, month, orgId);
             
-            int totalPresent = 0, totalAbsent = 0, totalLate = 0, totalHalfDays = 0;
-            int totalOtDays = 0, totalWorkMinutes = 0;
+            int totalPresent = 0, totalAbsent = 0, totalLate = 0, totalHalfDaysCount = 0;
+            int totalOtDays = 0, totalWorkMins = 0;
             
             for (MonthlySummaryDTO emp : summary) {
-                totalPresent += emp.getPresentDays() != null ? emp.getPresentDays() : 0;
-                totalAbsent += emp.getAbsentDays() != null ? emp.getAbsentDays() : 0;
-                totalLate += emp.getLateDays() != null ? emp.getLateDays() : 0;
-                totalHalfDays += emp.getHalfDays() != null ? emp.getHalfDays() : 0;
-                totalOtDays += emp.getOtDays() != null ? emp.getOtDays() : 0;
-                totalWorkMinutes += emp.getTotalWorkMinutes() != null ? emp.getTotalWorkMinutes() : 0;
+                totalPresent += emp.getPresent();
+                totalAbsent += emp.getAbsent();
+                totalLate += emp.getLateDays();
+                totalHalfDaysCount += emp.getHalfDays();
+                totalOtDays += emp.getOvertimeDays();
+                totalWorkMins += emp.getTotalWorkMinutes();
             }
             
             stats.put("totalPresentDays", totalPresent);
             stats.put("totalAbsentDays", totalAbsent);
             stats.put("totalLateDays", totalLate);
-            stats.put("totalHalfDays", totalHalfDays);
+            stats.put("totalHalfDays", totalHalfDaysCount);
             stats.put("totalOtDays", totalOtDays);
-            stats.put("totalWorkHours", totalWorkMinutes / 60);
+            stats.put("totalWorkHours", totalWorkMins / 60);
             stats.put("employeesWithData", summary.size());
             
             // Calculate averages
