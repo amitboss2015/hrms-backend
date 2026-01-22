@@ -10,13 +10,18 @@ import com.example.hrms.attendance.repo.ImportBatchRepository;
 import com.example.hrms.attendance.service.AttendanceQueryService;
 import com.example.hrms.attendance.service.AttendanceSummaryService;
 import com.example.hrms.domain.Employee;
+import com.example.hrms.domain.Holiday;
+import com.example.hrms.payroll.domain.Payroll;
+import com.example.hrms.payroll.repo.PayrollRepository;
 import com.example.hrms.repo.EmployeeRepository;
+import com.example.hrms.repo.HolidayRepository;
 import com.example.hrms.repo.ShiftRepository;
 import com.example.hrms.tenant.TenantContext;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -35,6 +40,8 @@ public class AttendanceQueryController {
     private final AttendanceDayRepository attendanceDayRepository;
     private final ImportBatchRepository importBatchRepository;
     private final ShiftRepository shiftRepository;
+    private final HolidayRepository holidayRepository;
+    private final PayrollRepository payrollRepository;
     
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm");
 
@@ -103,11 +110,8 @@ public class AttendanceQueryController {
     }
     
     /**
-     * Convert tenant ID (String) to org ID (Long) for multi-tenancy.
-     */
-    /**
-     * Dashboard Statistics API - Returns attendance data for the latest uploaded month
-     * This endpoint is designed for the main dashboard to show relevant monthly data
+     * Dashboard Statistics API - Returns comprehensive insights for the latest attendance month
+     * Optimized for single query with caching support on frontend
      */
     @GetMapping("/dashboard-stats")
     public ResponseEntity<Map<String, Object>> getDashboardStats() {
@@ -131,7 +135,6 @@ public class AttendanceQueryController {
             monthName = java.time.Month.of(month).name().charAt(0) + 
                        java.time.Month.of(month).name().substring(1).toLowerCase() + " " + year;
         } else {
-            // No attendance data - use current month as placeholder
             java.time.YearMonth now = java.time.YearMonth.now();
             month = now.getMonthValue();
             year = now.getYear();
@@ -144,7 +147,7 @@ public class AttendanceQueryController {
         stats.put("monthName", monthName);
         stats.put("hasAttendanceData", hasAttendanceData);
         
-        // Get employee counts
+        // ===== EMPLOYEE COUNTS =====
         List<Employee> employees = employeeRepository.findByTenantId(tenantId);
         long totalEmployees = employees.size();
         long activeEmployees = employees.stream()
@@ -154,59 +157,160 @@ public class AttendanceQueryController {
         stats.put("totalEmployees", totalEmployees);
         stats.put("activeEmployees", activeEmployees);
         
-        // Get shift count
+        // ===== SHIFTS COUNT =====
         long totalShifts = shiftRepository.countByTenantId(tenantId);
         stats.put("totalShifts", totalShifts);
+        
+        // ===== HOLIDAYS THIS MONTH =====
+        java.time.YearMonth ym = java.time.YearMonth.of(year, month);
+        LocalDate monthStart = ym.atDay(1);
+        LocalDate monthEnd = ym.atEndOfMonth();
+        List<Holiday> holidays = holidayRepository.findByTenantIdAndHolidayDateBetweenAndActiveTrue(tenantId, monthStart, monthEnd);
+        
+        List<Map<String, Object>> holidayList = holidays.stream()
+            .map(h -> {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("date", h.getHolidayDate().toString());
+                m.put("name", h.getName());
+                m.put("isPaid", h.getIsPaid());
+                m.put("isOptional", h.getIsOptional());
+                return m;
+            })
+            .collect(Collectors.toList());
+        stats.put("holidays", holidayList);
         
         if (hasAttendanceData) {
             // Get attendance summary for the latest month
             List<MonthlySummaryDTO> summary = summaryService.getSummary(year, month, orgId);
+            int daysInMonth = ym.lengthOfMonth();
             
-            int totalPresent = 0, totalAbsent = 0, totalLate = 0, totalHalfDaysCount = 0;
-            int totalOtDays = 0, totalWorkMins = 0;
-            
+            // ===== ATTENDANCE METRICS =====
+            int totalPresent = 0, totalAbsent = 0, totalLate = 0;
             for (MonthlySummaryDTO emp : summary) {
                 totalPresent += emp.getPresent();
                 totalAbsent += emp.getAbsent();
                 totalLate += emp.getLateDays();
-                totalHalfDaysCount += emp.getHalfDays();
-                totalOtDays += emp.getOvertimeDays();
-                totalWorkMins += emp.getTotalWorkMinutes();
             }
             
-            stats.put("totalPresentDays", totalPresent);
-            stats.put("totalAbsentDays", totalAbsent);
-            stats.put("totalLateDays", totalLate);
-            stats.put("totalHalfDays", totalHalfDaysCount);
-            stats.put("totalOtDays", totalOtDays);
-            stats.put("totalWorkHours", totalWorkMins / 60);
+            double avgAttendanceRate = summary.size() > 0 && daysInMonth > 0 
+                ? (double) totalPresent / (summary.size() * daysInMonth) * 100 : 0;
+            stats.put("attendanceRate", Math.round(avgAttendanceRate * 10) / 10.0);
             stats.put("employeesWithData", summary.size());
             
-            // Calculate averages
-            int daysInMonth = java.time.YearMonth.of(year, month).lengthOfMonth();
-            double avgAttendanceRate = 0;
-            if (summary.size() > 0 && daysInMonth > 0) {
-                avgAttendanceRate = (double) totalPresent / (summary.size() * daysInMonth) * 100;
-            }
-            stats.put("attendanceRate", Math.round(avgAttendanceRate * 10) / 10.0);
+            // ===== TOP 5 BEST ATTENDANCE =====
+            List<Map<String, Object>> topAttendance = summary.stream()
+                .filter(e -> e.getPresent() > 0)
+                .sorted((a, b) -> {
+                    double rateA = (double) a.getPresent() / daysInMonth * 100;
+                    double rateB = (double) b.getPresent() / daysInMonth * 100;
+                    return Double.compare(rateB, rateA);
+                })
+                .limit(5)
+                .map(e -> {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("empCode", e.getEmpCode());
+                    m.put("name", e.getEmpName() != null ? e.getEmpName() : e.getName());
+                    m.put("presentDays", e.getPresent());
+                    m.put("rate", Math.round((double) e.getPresent() / daysInMonth * 1000) / 10.0);
+                    return m;
+                })
+                .collect(Collectors.toList());
+            stats.put("topAttendance", topAttendance);
             
-            // Per-employee averages for the month
-            stats.put("avgPresentDays", summary.size() > 0 ? Math.round((double) totalPresent / summary.size() * 10) / 10.0 : 0);
-            stats.put("avgAbsentDays", summary.size() > 0 ? Math.round((double) totalAbsent / summary.size() * 10) / 10.0 : 0);
-            stats.put("avgLateDays", summary.size() > 0 ? Math.round((double) totalLate / summary.size() * 10) / 10.0 : 0);
+            // ===== TOP 5 MOST LATE =====
+            List<Map<String, Object>> topLate = summary.stream()
+                .filter(e -> e.getLateDays() > 0)
+                .sorted((a, b) -> Integer.compare(b.getLateDays(), a.getLateDays()))
+                .limit(5)
+                .map(e -> {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("empCode", e.getEmpCode());
+                    m.put("name", e.getEmpName() != null ? e.getEmpName() : e.getName());
+                    m.put("lateDays", e.getLateDays());
+                    m.put("lateMinutes", e.getTotalLateMinutes());
+                    return m;
+                })
+                .collect(Collectors.toList());
+            stats.put("topLate", topLate);
+            
+            // ===== PEAK ABSENT DAY =====
+            List<AttendanceDay> allDays = attendanceDayRepository.findByWorkDateBetween(monthStart, monthEnd)
+                .stream()
+                .filter(d -> tenantId.equals(d.getTenantId()))
+                .collect(Collectors.toList());
+            
+            Map<LocalDate, Long> absentByDate = allDays.stream()
+                .filter(d -> "ABSENT".equals(d.getStatus()))
+                .collect(Collectors.groupingBy(AttendanceDay::getWorkDate, Collectors.counting()));
+            
+            if (!absentByDate.isEmpty()) {
+                Map.Entry<LocalDate, Long> peakAbsent = absentByDate.entrySet().stream()
+                    .max(Map.Entry.comparingByValue())
+                    .orElse(null);
+                if (peakAbsent != null) {
+                    Map<String, Object> peakDay = new LinkedHashMap<>();
+                    peakDay.put("date", peakAbsent.getKey().toString());
+                    peakDay.put("dayName", peakAbsent.getKey().getDayOfWeek().name());
+                    peakDay.put("absentCount", peakAbsent.getValue());
+                    stats.put("peakAbsentDay", peakDay);
+                }
+            }
+            
+            // ===== DEVICE-WISE PUNCH STATS =====
+            List<ImportBatch> batches = importBatchRepository.findByOrgIdAndMonthAndYear(orgId, month, year);
+            List<Map<String, Object>> deviceStats = batches.stream()
+                .map(b -> {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("deviceCode", b.getDeviceCode() != null ? b.getDeviceCode() : "DEFAULT");
+                    m.put("totalRows", b.getTotalRows());
+                    m.put("successRows", b.getSuccessRows());
+                    m.put("errorRows", b.getErrorRows());
+                    m.put("uploadedAt", b.getUploadedAt() != null ? b.getUploadedAt().toString() : null);
+                    return m;
+                })
+                .collect(Collectors.toList());
+            stats.put("deviceStats", deviceStats);
             
         } else {
-            stats.put("totalPresentDays", 0);
-            stats.put("totalAbsentDays", 0);
-            stats.put("totalLateDays", 0);
-            stats.put("totalHalfDays", 0);
-            stats.put("totalOtDays", 0);
-            stats.put("totalWorkHours", 0);
-            stats.put("employeesWithData", 0);
             stats.put("attendanceRate", 0);
-            stats.put("avgPresentDays", 0);
-            stats.put("avgAbsentDays", 0);
-            stats.put("avgLateDays", 0);
+            stats.put("employeesWithData", 0);
+            stats.put("topAttendance", List.of());
+            stats.put("topLate", List.of());
+            stats.put("deviceStats", List.of());
+        }
+        
+        // ===== PAYROLL SUMMARY =====
+        List<Payroll> payrolls = payrollRepository.findByTenantIdAndYearAndMonth(tenantId, year, month);
+        
+        if (!payrolls.isEmpty()) {
+            java.math.BigDecimal totalNet = payrolls.stream()
+                .map(p -> p.getNetSalary() != null ? p.getNetSalary() : java.math.BigDecimal.ZERO)
+                .reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add);
+            
+            stats.put("payrollGenerated", true);
+            stats.put("payrollCount", payrolls.size());
+            stats.put("totalPayrollAmount", totalNet);
+            
+            // Top 5 highest earners
+            List<Map<String, Object>> topEarners = payrolls.stream()
+                .filter(p -> p.getNetSalary() != null && p.getNetSalary().compareTo(BigDecimal.ZERO) > 0)
+                .sorted((a, b) -> b.getNetSalary().compareTo(a.getNetSalary()))
+                .limit(5)
+                .map(p -> {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("empId", p.getEmpId());
+                    m.put("name", p.getEmpName());
+                    m.put("netSalary", p.getNetSalary());
+                    m.put("grossSalary", p.getGrossSalary());
+                    return m;
+                })
+                .collect(Collectors.toList());
+            stats.put("topEarners", topEarners);
+        } else {
+            stats.put("payrollGenerated", false);
+            stats.put("payrollCount", 0);
+            stats.put("totalPayrollAmount", 0);
+            stats.put("topEarners", List.of());
         }
         
         return ResponseEntity.ok(stats);
