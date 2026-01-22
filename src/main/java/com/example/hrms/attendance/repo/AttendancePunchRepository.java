@@ -61,4 +61,38 @@ public interface AttendancePunchRepository extends JpaRepository<AttendancePunch
             @Param("orgId") Long orgId,
             @Param("start") Instant start,
             @Param("end") Instant end);
+    
+    /**
+     * Find employees who punched at multiple devices in a time range.
+     * Returns: employeeId, device count, list of devices
+     */
+    @Query("""
+            SELECT p.employeeId, COUNT(DISTINCT p.deviceId) as deviceCount
+            FROM AttendancePunch p
+            WHERE p.orgId = :orgId
+              AND p.punchTsUtc >= :start AND p.punchTsUtc < :end
+              AND p.deviceId IS NOT NULL
+            GROUP BY p.employeeId
+            HAVING COUNT(DISTINCT p.deviceId) > 1
+            ORDER BY deviceCount DESC
+            """)
+    List<Object[]> findEmployeesWithMultipleDevices(
+            @Param("orgId") Long orgId,
+            @Param("start") Instant start,
+            @Param("end") Instant end);
+    
+    /**
+     * Get distinct device IDs for an employee in a time range.
+     */
+    @Query("""
+            SELECT DISTINCT p.deviceId
+            FROM AttendancePunch p
+            WHERE p.employeeId = :employeeId
+              AND p.punchTsUtc >= :start AND p.punchTsUtc < :end
+              AND p.deviceId IS NOT NULL
+            """)
+    List<String> findDistinctDevicesByEmployee(
+            @Param("employeeId") Long employeeId,
+            @Param("start") Instant start,
+            @Param("end") Instant end);
 }

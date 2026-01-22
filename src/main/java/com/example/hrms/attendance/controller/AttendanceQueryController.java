@@ -6,6 +6,7 @@ import com.example.hrms.attendance.dto.DailyPunchLogDTO;
 import com.example.hrms.attendance.dto.MonthlySummaryDTO;
 import com.example.hrms.attendance.dto.SummaryRowDTO;
 import com.example.hrms.attendance.repo.AttendanceDayRepository;
+import com.example.hrms.attendance.repo.AttendancePunchRepository;
 import com.example.hrms.attendance.repo.ImportBatchRepository;
 import com.example.hrms.attendance.service.AttendanceQueryService;
 import com.example.hrms.attendance.service.AttendanceSummaryService;
@@ -38,6 +39,7 @@ public class AttendanceQueryController {
     private final AttendanceSummaryService summaryService;
     private final EmployeeRepository employeeRepository;
     private final AttendanceDayRepository attendanceDayRepository;
+    private final AttendancePunchRepository punchRepository;
     private final ImportBatchRepository importBatchRepository;
     private final ShiftRepository shiftRepository;
     private final HolidayRepository holidayRepository;
@@ -271,12 +273,47 @@ public class AttendanceQueryController {
                 .collect(Collectors.toList());
             stats.put("deviceStats", deviceStats);
             
+            // ===== EMPLOYEES PUNCHING AT MULTIPLE DEVICES =====
+            // This could indicate: buddy punching, dual-location work, or device issues
+            java.time.Instant monthStartInstant = monthStart.atStartOfDay(java.time.ZoneId.of("Asia/Kolkata")).toInstant();
+            java.time.Instant monthEndInstant = monthEnd.plusDays(1).atStartOfDay(java.time.ZoneId.of("Asia/Kolkata")).toInstant();
+            
+            List<Object[]> multiDeviceResults = punchRepository.findEmployeesWithMultipleDevices(orgId, monthStartInstant, monthEndInstant);
+            
+            List<Map<String, Object>> multiDeviceEmployees = new ArrayList<>();
+            for (Object[] row : multiDeviceResults) {
+                Long empId = (Long) row[0];
+                Long deviceCount = (Long) row[1];
+                
+                // Get employee name
+                Employee emp = employees.stream()
+                    .filter(e -> e.getId().equals(empId))
+                    .findFirst()
+                    .orElse(null);
+                
+                // Get list of devices this employee punched at
+                List<String> deviceList = punchRepository.findDistinctDevicesByEmployee(empId, monthStartInstant, monthEndInstant);
+                
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("empId", empId);
+                m.put("empCode", emp != null ? emp.getEmpCode() : "N/A");
+                m.put("name", emp != null ? (emp.getFirstName() + " " + (emp.getLastName() != null ? emp.getLastName() : "")).trim() : "Unknown");
+                m.put("deviceCount", deviceCount);
+                m.put("devices", deviceList);
+                multiDeviceEmployees.add(m);
+                
+                // Limit to top 10
+                if (multiDeviceEmployees.size() >= 10) break;
+            }
+            stats.put("multiDeviceEmployees", multiDeviceEmployees);
+            
         } else {
             stats.put("attendanceRate", 0);
             stats.put("employeesWithData", 0);
             stats.put("topAttendance", List.of());
             stats.put("topLate", List.of());
             stats.put("deviceStats", List.of());
+            stats.put("multiDeviceEmployees", List.of());
         }
         
         // ===== PAYROLL SUMMARY =====
