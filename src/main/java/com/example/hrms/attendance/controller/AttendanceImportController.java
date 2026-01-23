@@ -511,33 +511,38 @@ public class AttendanceImportController {
 
     /**
      * Download a SAMPLE attendance template with real example data.
-     * This is a STATIC file from actual biometric machine export.
+     * This is a STATIC Excel file from actual biometric machine export.
      * Shows users the exact format they need to follow.
+     * 
+     * @param type - "ladies" or "gents" (default: ladies)
      */
     @GetMapping("/template/sample")
     public ResponseEntity<byte[]> downloadSampleTemplate(
-            @RequestParam(value = "format", defaultValue = "xlsx") String format) {
+            @RequestParam(value = "type", defaultValue = "ladies") String type) {
         try {
-            // Load static sample file from resources
-            org.springframework.core.io.ClassPathResource resource = 
-                new org.springframework.core.io.ClassPathResource("templates/attendance_sample.csv");
-            
-            byte[] csvData = resource.getInputStream().readAllBytes();
-            
-            if ("csv".equalsIgnoreCase(format)) {
-                // Return CSV directly
-                return ResponseEntity.ok()
-                        .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=attendance_sample_template.csv")
-                        .contentType(MediaType.parseMediaType("text/csv"))
-                        .body(csvData);
+            // Determine which sample file to serve
+            String filename;
+            if ("gents".equalsIgnoreCase(type)) {
+                filename = "templates/attednace_logs_gents.xlsx";
             } else {
-                // Convert CSV to Excel format
-                byte[] excelData = convertCsvToExcel(csvData);
-                return ResponseEntity.ok()
-                        .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=attendance_sample_template.xlsx")
-                        .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
-                        .body(excelData);
+                filename = "templates/attednace_logs_ladies.xlsx";
             }
+            
+            // Load static Excel file from resources directly - NO conversion needed
+            org.springframework.core.io.ClassPathResource resource = 
+                new org.springframework.core.io.ClassPathResource(filename);
+            
+            byte[] excelData = resource.getInputStream().readAllBytes();
+            
+            String downloadFilename = "gents".equalsIgnoreCase(type) 
+                ? "attendance_sample_gents.xlsx" 
+                : "attendance_sample_ladies.xlsx";
+            
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=" + downloadFilename)
+                    .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                    .body(excelData);
+                    
         } catch (Exception e) {
             log.error("Error loading sample template", e);
             return ResponseEntity.internalServerError().build();
