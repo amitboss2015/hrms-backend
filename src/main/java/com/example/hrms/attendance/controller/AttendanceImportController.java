@@ -25,6 +25,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
 import java.time.YearMonth;
 import java.util.HashMap;
 import java.util.List;
@@ -509,22 +510,184 @@ public class AttendanceImportController {
     }
 
     /**
-     * Download a SAMPLE attendance template with example data.
-     * This shows users the exact format they need to follow.
+     * Download a SAMPLE attendance template with real example data.
+     * This is a STATIC file from actual biometric machine export.
+     * Shows users the exact format they need to follow.
      */
     @GetMapping("/template/sample")
-    public ResponseEntity<byte[]> downloadSampleTemplate() {
+    public ResponseEntity<byte[]> downloadSampleTemplate(
+            @RequestParam(value = "format", defaultValue = "xlsx") String format) {
         try {
-            byte[] sample = attendanceExcelService.generateSampleTemplate();
+            // Load static sample file from resources
+            org.springframework.core.io.ClassPathResource resource = 
+                new org.springframework.core.io.ClassPathResource("templates/attendance_sample.csv");
             
-            return ResponseEntity.ok()
-                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=attendance_sample_template.xlsx")
-                    .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
-                    .body(sample);
+            byte[] csvData = resource.getInputStream().readAllBytes();
+            
+            if ("csv".equalsIgnoreCase(format)) {
+                // Return CSV directly
+                return ResponseEntity.ok()
+                        .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=attendance_sample_template.csv")
+                        .contentType(MediaType.parseMediaType("text/csv"))
+                        .body(csvData);
+            } else {
+                // Convert CSV to Excel format
+                byte[] excelData = convertCsvToExcel(csvData);
+                return ResponseEntity.ok()
+                        .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=attendance_sample_template.xlsx")
+                        .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                        .body(excelData);
+            }
         } catch (Exception e) {
-            log.error("Error generating sample template", e);
+            log.error("Error loading sample template", e);
             return ResponseEntity.internalServerError().build();
         }
+    }
+    
+    /**
+     * Convert CSV data to Excel format.
+     */
+    private byte[] convertCsvToExcel(byte[] csvData) throws IOException {
+        try (org.apache.poi.xssf.usermodel.XSSFWorkbook workbook = new org.apache.poi.xssf.usermodel.XSSFWorkbook()) {
+            org.apache.poi.ss.usermodel.Sheet sheet = workbook.createSheet("List of Logs");
+            
+            // Create styles
+            org.apache.poi.ss.usermodel.CellStyle titleStyle = workbook.createCellStyle();
+            org.apache.poi.ss.usermodel.Font titleFont = workbook.createFont();
+            titleFont.setBold(true);
+            titleFont.setFontHeightInPoints((short) 14);
+            titleStyle.setFont(titleFont);
+            
+            org.apache.poi.ss.usermodel.CellStyle dataStyle = workbook.createCellStyle();
+            dataStyle.setAlignment(org.apache.poi.ss.usermodel.HorizontalAlignment.CENTER);
+            dataStyle.setVerticalAlignment(org.apache.poi.ss.usermodel.VerticalAlignment.CENTER);
+            dataStyle.setWrapText(true);
+            
+            org.apache.poi.ss.usermodel.CellStyle headerStyle = workbook.createCellStyle();
+            headerStyle.setFillForegroundColor(org.apache.poi.ss.usermodel.IndexedColors.LIGHT_CORNFLOWER_BLUE.getIndex());
+            headerStyle.setFillPattern(org.apache.poi.ss.usermodel.FillPatternType.SOLID_FOREGROUND);
+            org.apache.poi.ss.usermodel.Font headerFont = workbook.createFont();
+            headerFont.setBold(true);
+            headerStyle.setFont(headerFont);
+            headerStyle.setAlignment(org.apache.poi.ss.usermodel.HorizontalAlignment.CENTER);
+            
+            // Parse CSV and write to Excel
+            String csvContent = new String(csvData, java.nio.charset.StandardCharsets.UTF_8);
+            String[] lines = csvContent.split("\n");
+            
+            int rowNum = 0;
+            for (String line : lines) {
+                org.apache.poi.ss.usermodel.Row row = sheet.createRow(rowNum);
+                
+                // Handle CSV parsing with quoted fields containing newlines
+                String[] cells = parseCsvLine(line);
+                
+                for (int col = 0; col < cells.length; col++) {
+                    org.apache.poi.ss.usermodel.Cell cell = row.createCell(col);
+                    String cellValue = cells[col].trim();
+                    
+                    // Replace escaped newlines back
+                    cellValue = cellValue.replace("\\n", "\n");
+                    
+                    cell.setCellValue(cellValue);
+                    
+                    // Apply styles based on content
+                    if (cellValue.contains("No :") || cellValue.contains("Name :") || cellValue.contains("Period")) {
+                        cell.setCellStyle(titleStyle);
+                    } else if (cellValue.matches("\\d+") && cellValue.length() <= 2) {
+                        cell.setCellStyle(headerStyle);
+                    } else if (cellValue.contains(":") && cellValue.contains("\n")) {
+                        cell.setCellStyle(dataStyle);
+                        row.setHeightInPoints(35);
+                    }
+                }
+                rowNum++;
+            }
+            
+            // Auto-size columns
+            for (int col = 0; col <= 31; col++) {
+                sheet.setColumnWidth(col, 10 * 256);
+            }
+            
+            // Add Instructions sheet
+            org.apache.poi.ss.usermodel.Sheet instructionSheet = workbook.createSheet("Instructions");
+            createInstructionSheet(instructionSheet, workbook);
+            
+            java.io.ByteArrayOutputStream outputStream = new java.io.ByteArrayOutputStream();
+            workbook.write(outputStream);
+            return outputStream.toByteArray();
+        }
+    }
+    
+    /**
+     * Parse a CSV line handling quoted fields.
+     */
+    private String[] parseCsvLine(String line) {
+        java.util.List<String> result = new java.util.ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        boolean inQuotes = false;
+        
+        for (int i = 0; i < line.length(); i++) {
+            char c = line.charAt(i);
+            
+            if (c == '"') {
+                inQuotes = !inQuotes;
+            } else if (c == ',' && !inQuotes) {
+                result.add(current.toString());
+                current = new StringBuilder();
+            } else {
+                current.append(c);
+            }
+        }
+        result.add(current.toString());
+        
+        return result.toArray(new String[0]);
+    }
+    
+    /**
+     * Create instruction sheet with format help message.
+     */
+    private void createInstructionSheet(org.apache.poi.ss.usermodel.Sheet sheet, org.apache.poi.xssf.usermodel.XSSFWorkbook workbook) {
+        org.apache.poi.ss.usermodel.CellStyle titleStyle = workbook.createCellStyle();
+        org.apache.poi.ss.usermodel.Font titleFont = workbook.createFont();
+        titleFont.setBold(true);
+        titleFont.setFontHeightInPoints((short) 16);
+        titleStyle.setFont(titleFont);
+        
+        org.apache.poi.ss.usermodel.CellStyle normalStyle = workbook.createCellStyle();
+        normalStyle.setWrapText(true);
+        
+        int rowNum = 0;
+        
+        // English Instructions
+        org.apache.poi.ss.usermodel.Row row1 = sheet.createRow(rowNum++);
+        row1.createCell(0).setCellValue("📋 ATTENDANCE IMPORT INSTRUCTIONS");
+        row1.getCell(0).setCellStyle(titleStyle);
+        
+        rowNum++;
+        sheet.createRow(rowNum++).createCell(0).setCellValue("🇬🇧 ENGLISH:");
+        sheet.createRow(rowNum++).createCell(0).setCellValue("1. This is the sample format from a biometric machine.");
+        sheet.createRow(rowNum++).createCell(0).setCellValue("2. Your attendance file should have the same format.");
+        sheet.createRow(rowNum++).createCell(0).setCellValue("3. Each employee has 3 rows: Info row, Punch data row, Day numbers row.");
+        sheet.createRow(rowNum++).createCell(0).setCellValue("4. Punch times format: IN time on first line, OUT time on second line (e.g., 09:00\\n17:30)");
+        sheet.createRow(rowNum++).createCell(0).setCellValue("5. Empty cells = absent or no punch recorded.");
+        sheet.createRow(rowNum++).createCell(0).setCellValue("6. If your biometric machine exports differently, please contact admin.");
+        
+        rowNum += 2;
+        sheet.createRow(rowNum++).createCell(0).setCellValue("🇮🇳 हिंदी:");
+        sheet.createRow(rowNum++).createCell(0).setCellValue("1. यह बायोमेट्रिक मशीन का सैंपल फॉर्मेट है।");
+        sheet.createRow(rowNum++).createCell(0).setCellValue("2. आपकी अटेंडेंस फाइल का फॉर्मेट इसी तरह होना चाहिए।");
+        sheet.createRow(rowNum++).createCell(0).setCellValue("3. हर कर्मचारी के 3 rows हैं: Info row, Punch data row, Day numbers row।");
+        sheet.createRow(rowNum++).createCell(0).setCellValue("4. पंच टाइम फॉर्मेट: पहली लाइन में IN टाइम, दूसरी लाइन में OUT टाइम (जैसे 09:00\\n17:30)");
+        sheet.createRow(rowNum++).createCell(0).setCellValue("5. खाली सेल = अनुपस्थित या कोई पंच रिकॉर्ड नहीं।");
+        sheet.createRow(rowNum++).createCell(0).setCellValue("6. अगर आपकी बायोमेट्रिक मशीन अलग फॉर्मेट में एक्सपोर्ट करती है, तो कृपया एडमिन से संपर्क करें।");
+        
+        rowNum += 2;
+        sheet.createRow(rowNum++).createCell(0).setCellValue("⚠️ IMPORTANT / महत्वपूर्ण:");
+        sheet.createRow(rowNum++).createCell(0).setCellValue("Every biometric device has its own format. If different, contact: support@chandrahr.in");
+        sheet.createRow(rowNum++).createCell(0).setCellValue("हर बायोमेट्रिक डिवाइस का अपना फॉर्मेट होता है। अगर अलग हो तो संपर्क करें: support@chandrahr.in");
+        
+        sheet.setColumnWidth(0, 100 * 256);
     }
 
     /**
