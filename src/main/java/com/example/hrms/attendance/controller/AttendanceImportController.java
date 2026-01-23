@@ -546,6 +546,7 @@ public class AttendanceImportController {
     
     /**
      * Convert CSV data to Excel format.
+     * Handles CSV with multiline quoted values properly.
      */
     private byte[] convertCsvToExcel(byte[] csvData) throws IOException {
         try (org.apache.poi.xssf.usermodel.XSSFWorkbook workbook = new org.apache.poi.xssf.usermodel.XSSFWorkbook()) {
@@ -564,47 +565,48 @@ public class AttendanceImportController {
             dataStyle.setWrapText(true);
             
             org.apache.poi.ss.usermodel.CellStyle headerStyle = workbook.createCellStyle();
-            headerStyle.setFillForegroundColor(org.apache.poi.ss.usermodel.IndexedColors.LIGHT_CORNFLOWER_BLUE.getIndex());
+            headerStyle.setFillForegroundColor(org.apache.poi.ss.usermodel.IndexedColors.LIGHT_GREEN.getIndex());
             headerStyle.setFillPattern(org.apache.poi.ss.usermodel.FillPatternType.SOLID_FOREGROUND);
             org.apache.poi.ss.usermodel.Font headerFont = workbook.createFont();
             headerFont.setBold(true);
             headerStyle.setFont(headerFont);
             headerStyle.setAlignment(org.apache.poi.ss.usermodel.HorizontalAlignment.CENTER);
             
-            // Parse CSV and write to Excel
+            // Parse CSV properly handling multiline quoted values
             String csvContent = new String(csvData, java.nio.charset.StandardCharsets.UTF_8);
-            String[] lines = csvContent.split("\n");
+            java.util.List<java.util.List<String>> rows = parseMultilineCsv(csvContent);
             
             int rowNum = 0;
-            for (String line : lines) {
+            for (java.util.List<String> rowData : rows) {
                 org.apache.poi.ss.usermodel.Row row = sheet.createRow(rowNum);
+                boolean hasTimeData = false;
                 
-                // Handle CSV parsing with quoted fields containing newlines
-                String[] cells = parseCsvLine(line);
-                
-                for (int col = 0; col < cells.length; col++) {
+                for (int col = 0; col < rowData.size(); col++) {
                     org.apache.poi.ss.usermodel.Cell cell = row.createCell(col);
-                    String cellValue = cells[col].trim();
-                    
-                    // Replace escaped newlines back
-                    cellValue = cellValue.replace("\\n", "\n");
+                    String cellValue = rowData.get(col);
                     
                     cell.setCellValue(cellValue);
                     
                     // Apply styles based on content
-                    if (cellValue.contains("No :") || cellValue.contains("Name :") || cellValue.contains("Period")) {
+                    if (cellValue.contains("No :") || cellValue.contains("Name :") || 
+                        cellValue.contains("Dept :") || cellValue.contains("Period") ||
+                        cellValue.contains("List of Logs")) {
                         cell.setCellStyle(titleStyle);
                     } else if (cellValue.matches("\\d+") && cellValue.length() <= 2) {
                         cell.setCellStyle(headerStyle);
                     } else if (cellValue.contains(":") && cellValue.contains("\n")) {
                         cell.setCellStyle(dataStyle);
-                        row.setHeightInPoints(35);
+                        hasTimeData = true;
                     }
+                }
+                
+                if (hasTimeData) {
+                    row.setHeightInPoints(35);
                 }
                 rowNum++;
             }
             
-            // Auto-size columns
+            // Set column widths
             for (int col = 0; col <= 31; col++) {
                 sheet.setColumnWidth(col, 10 * 256);
             }
@@ -620,28 +622,52 @@ public class AttendanceImportController {
     }
     
     /**
-     * Parse a CSV line handling quoted fields.
+     * Parse CSV content that may contain multiline quoted values.
+     * Returns a list of rows, where each row is a list of cell values.
      */
-    private String[] parseCsvLine(String line) {
-        java.util.List<String> result = new java.util.ArrayList<>();
-        StringBuilder current = new StringBuilder();
+    private java.util.List<java.util.List<String>> parseMultilineCsv(String csvContent) {
+        java.util.List<java.util.List<String>> rows = new java.util.ArrayList<>();
+        java.util.List<String> currentRow = new java.util.ArrayList<>();
+        StringBuilder currentCell = new StringBuilder();
         boolean inQuotes = false;
         
-        for (int i = 0; i < line.length(); i++) {
-            char c = line.charAt(i);
+        for (int i = 0; i < csvContent.length(); i++) {
+            char c = csvContent.charAt(i);
+            char nextChar = (i + 1 < csvContent.length()) ? csvContent.charAt(i + 1) : '\0';
             
             if (c == '"') {
-                inQuotes = !inQuotes;
+                if (inQuotes && nextChar == '"') {
+                    // Escaped quote
+                    currentCell.append('"');
+                    i++; // Skip next quote
+                } else {
+                    // Toggle quote state
+                    inQuotes = !inQuotes;
+                }
             } else if (c == ',' && !inQuotes) {
-                result.add(current.toString());
-                current = new StringBuilder();
+                // End of cell
+                currentRow.add(currentCell.toString());
+                currentCell = new StringBuilder();
+            } else if (c == '\n' && !inQuotes) {
+                // End of row
+                currentRow.add(currentCell.toString());
+                currentCell = new StringBuilder();
+                rows.add(currentRow);
+                currentRow = new java.util.ArrayList<>();
+            } else if (c == '\r' && !inQuotes) {
+                // Skip carriage return
             } else {
-                current.append(c);
+                currentCell.append(c);
             }
         }
-        result.add(current.toString());
         
-        return result.toArray(new String[0]);
+        // Add last cell and row
+        if (currentCell.length() > 0 || !currentRow.isEmpty()) {
+            currentRow.add(currentCell.toString());
+            rows.add(currentRow);
+        }
+        
+        return rows;
     }
     
     /**
