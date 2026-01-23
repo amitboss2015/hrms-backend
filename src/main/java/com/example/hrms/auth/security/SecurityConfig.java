@@ -69,6 +69,10 @@ public class SecurityConfig {
                 .requestMatchers("/api/public/**").permitAll()
                 .requestMatchers("/api/health").permitAll()
                 
+                // Sample attendance template - public for easy access
+                .requestMatchers(HttpMethod.GET, "/api/attendance/template/sample").permitAll()
+                .requestMatchers(HttpMethod.GET, "/api/attendance/template/info").permitAll()
+                
                 // Swagger/OpenAPI - conditionally enabled based on profile
                 // In production, swaggerEnabled=false, so these require SUPER_ADMIN
                 .requestMatchers("/swagger-ui/**", "/swagger-ui.html")

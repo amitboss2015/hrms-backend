@@ -292,6 +292,252 @@ public class AttendanceExcelService {
     }
 
     /**
+     * Generate a SAMPLE attendance template with REAL example data.
+     * This shows users the exact format they need to follow.
+     * Based on actual biometric machine export format.
+     */
+    public byte[] generateSampleTemplate() throws IOException {
+        try (XSSFWorkbook workbook = new XSSFWorkbook()) {
+            int daysInMonth = 31; // December 2025
+            
+            Sheet sheet = workbook.createSheet("List of Logs");
+
+            // ========== STYLES ==========
+            CellStyle titleStyle = workbook.createCellStyle();
+            Font titleFont = workbook.createFont();
+            titleFont.setBold(true);
+            titleFont.setFontHeightInPoints((short) 14);
+            titleFont.setColor(IndexedColors.DARK_GREEN.getIndex());
+            titleStyle.setFont(titleFont);
+
+            CellStyle blueHeaderStyle = workbook.createCellStyle();
+            blueHeaderStyle.setFillForegroundColor(IndexedColors.LIGHT_CORNFLOWER_BLUE.getIndex());
+            blueHeaderStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+            Font blueFont = workbook.createFont();
+            blueFont.setBold(true);
+            blueHeaderStyle.setFont(blueFont);
+            blueHeaderStyle.setAlignment(HorizontalAlignment.CENTER);
+            blueHeaderStyle.setBorderBottom(BorderStyle.THIN);
+            blueHeaderStyle.setBorderTop(BorderStyle.THIN);
+            blueHeaderStyle.setBorderLeft(BorderStyle.THIN);
+            blueHeaderStyle.setBorderRight(BorderStyle.THIN);
+
+            CellStyle dataStyle = workbook.createCellStyle();
+            dataStyle.setAlignment(HorizontalAlignment.CENTER);
+            dataStyle.setVerticalAlignment(VerticalAlignment.CENTER);
+            dataStyle.setWrapText(true);
+            dataStyle.setBorderBottom(BorderStyle.THIN);
+            dataStyle.setBorderTop(BorderStyle.THIN);
+            dataStyle.setBorderLeft(BorderStyle.THIN);
+            dataStyle.setBorderRight(BorderStyle.THIN);
+            
+            CellStyle infoStyle = workbook.createCellStyle();
+            Font infoFont = workbook.createFont();
+            infoFont.setBold(true);
+            infoStyle.setFont(infoFont);
+
+            int rowNum = 0;
+
+            // Row 1: Title
+            Row titleRow = sheet.createRow(rowNum++);
+            Cell titleCell = titleRow.createCell(0);
+            titleCell.setCellValue("List of Logs");
+            titleCell.setCellStyle(titleStyle);
+
+            rowNum++; // Empty row
+
+            // Row 3: Period info
+            Row periodRow = sheet.createRow(rowNum++);
+            Cell periodLabel = periodRow.createCell(0);
+            periodLabel.setCellValue("Period :");
+            Cell periodValue = periodRow.createCell(2);
+            periodValue.setCellValue("2025/12/01 ~ 12/31\t( sasa emp att )");
+
+            // Row 4: Day numbers header
+            Row headerRow = sheet.createRow(rowNum++);
+            for (int day = 1; day <= daysInMonth; day++) {
+                Cell dayHeader = headerRow.createCell(day - 1);
+                dayHeader.setCellValue(day);
+                dayHeader.setCellStyle(blueHeaderStyle);
+            }
+
+            // REAL Sample employees with REAL punch data from actual biometric export
+            // Format: {empCode, empName, day1, day2, day3, ... day31}
+            String[][] realSampleData = {
+                // Employee 1: soni kumari
+                {"1", "soni kumari", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+                 "09:40\n17:36", "08:43\n17:36", "", "08:44\n17:01", "09:01\n17:32", "08:51\n17:33", "08:28\n17:34", 
+                 "08:47\n17:34", "08:58\n09:51", "08:51\n17:23"},
+                
+                // Employee 5: priyeshi kri
+                {"5", "priyeshi kri", "09:11\n17:33", "09:04\n17:35", "09:06\n17:35", "", "09:06\n17:36", "09:02\n17:35", 
+                 "09:03\n17:36", "09:03\n17:38", "09:04\n17:36", "09:03\n17:35", "09:06\n17:36", "09:07\n17:37", 
+                 "09:07\n17:36", "09:04\n17:37", "09:04\n17:36", "09:02\n17:36", "09:04\n17:38", "09:08\n17:36", 
+                 "09:06\n17:37", "09:06\n17:37", "09:08\n17:36", "09:03\n17:03", "", "", "09:12\n17:34", "09:09\n17:32", 
+                 "09:06\n17:32", "09:01\n17:33", "09:07\n17:33", "09:08\n17:32", "09:04\n17:21"},
+                
+                // Employee 8: madhu kumari
+                {"8", "madhu kumari", "", "09:13\n17:32", "09:14\n17:35", "", "", "09:11\n17:35", "09:13\n17:36", 
+                 "09:18\n17:38", "", "09:14\n17:35", "09:13\n17:36", "09:14\n17:37", "09:09\n17:36", "09:07\n17:37", 
+                 "", "09:09\n17:36", "09:10\n17:37", "09:40\n17:36", "", "09:06\n17:36", "09:11\n17:36", "09:10\n17:33", 
+                 "09:10\n17:34", "", "", "", "", "", "", ""},
+                
+                // Employee 11: kanchan devi
+                {"11", "kanchan devi", "09:10\n17:34", "09:03\n17:34", "09:06\n17:35", "10:02\n17:33", "09:07\n17:35", 
+                 "09:06\n17:35", "09:06\n17:36", "09:09\n17:37", "09:08\n17:35", "09:07\n17:35", "09:11\n17:35", 
+                 "09:12\n17:36", "09:11\n17:35", "09:06\n17:37", "09:11\n17:36", "09:12\n17:36", "09:05\n17:37", 
+                 "09:06\n17:35", "09:15\n17:37", "09:02\n17:36", "09:06\n17:36", "09:04\n17:33", "", "", "", 
+                 "09:07\n17:32", "09:05\n17:32", "09:06\n17:33", "09:06\n17:32", "09:05\n17:32", "09:07\n17:20"},
+                
+                // Employee 12: sima devi
+                {"12", "sima devi", "", "08:59\n17:32", "08:53\n17:34", "08:58\n17:32", "09:04\n17:32", "09:04\n17:33", 
+                 "09:00\n17:33", "08:56\n17:33", "09:04\n17:34", "09:03\n17:33", "09:05\n17:34", "09:05\n17:34", "", 
+                 "08:52\n17:34", "09:02\n17:34", "08:55\n17:34", "09:03\n17:34", "09:05\n17:33", "09:03\n17:35", 
+                 "08:53\n17:33", "09:03\n17:34", "09:03\n17:01", "", "", "", "09:05\n17:31", "09:10\n17:30", 
+                 "08:57\n17:31", "09:00\n17:31", "09:00\n17:31", "08:59\n17:19"},
+                
+                // Employee 58: neelam kumari
+                {"58", "neelam kumari", "09:10\n17:33", "09:05\n17:33", "09:01\n17:34", "09:04\n17:33", "09:05\n17:34", 
+                 "09:05\n17:34", "09:08\n17:34", "09:06\n17:34", "09:04\n17:34", "09:04\n17:34", "09:07\n17:34", 
+                 "09:06\n17:35", "09:03\n17:34", "09:06\n17:35", "09:05\n17:35", "09:05\n17:34", "09:04\n17:34", 
+                 "09:05\n17:33", "09:01\n17:35", "09:05\n17:35", "09:07\n17:33", "09:11\n17:03", "", "", "", 
+                 "09:02\n17:33", "09:10\n17:31", "09:01\n17:30", "08:58\n17:31", "09:01\n17:30", "09:04\n17:30", "09:00\n17:21"}
+            };
+
+            for (int e = 0; e < realSampleData.length; e++) {
+                String empCode = realSampleData[e][0];
+                String empName = realSampleData[e][1];
+                
+                // Info row: No :  {empCode}    Name : {empName}    Dept : day time
+                Row infoRow = sheet.createRow(rowNum++);
+                Cell noLabelCell = infoRow.createCell(0);
+                noLabelCell.setCellValue("No :");
+                noLabelCell.setCellStyle(infoStyle);
+                Cell noValueCell = infoRow.createCell(2);
+                noValueCell.setCellValue(empCode);
+                noValueCell.setCellStyle(infoStyle);
+                Cell nameLabelCell = infoRow.createCell(8);
+                nameLabelCell.setCellValue("Name :");
+                nameLabelCell.setCellStyle(infoStyle);
+                Cell nameValueCell = infoRow.createCell(10);
+                nameValueCell.setCellValue(empName);
+                nameValueCell.setCellStyle(infoStyle);
+                Cell deptLabelCell = infoRow.createCell(20);
+                deptLabelCell.setCellValue("Dept :");
+                deptLabelCell.setCellStyle(infoStyle);
+                Cell deptValueCell = infoRow.createCell(22);
+                deptValueCell.setCellValue("day time");
+                deptValueCell.setCellStyle(infoStyle);
+
+                // Punch data row
+                Row punchRow = sheet.createRow(rowNum++);
+                punchRow.setHeightInPoints(35);
+
+                for (int day = 1; day <= daysInMonth; day++) {
+                    Cell dayCell = punchRow.createCell(day - 1);
+                    String punchData = (day + 1 < realSampleData[e].length) ? realSampleData[e][day + 1] : "";
+                    dayCell.setCellValue(punchData);
+                    dayCell.setCellStyle(dataStyle);
+                }
+
+                // Day numbers row
+                Row dayNumRow = sheet.createRow(rowNum++);
+                for (int day = 1; day <= daysInMonth; day++) {
+                    Cell dayCell = dayNumRow.createCell(day - 1);
+                    dayCell.setCellValue(day);
+                    dayCell.setCellStyle(blueHeaderStyle);
+                }
+            }
+
+            // Set column widths
+            for (int col = 0; col <= 30; col++) {
+                sheet.setColumnWidth(col, 11 * 256);
+            }
+
+            // Add Instructions sheet
+            Sheet instructionSheet = workbook.createSheet("Instructions");
+            createSampleInstructionSheet(instructionSheet, workbook);
+
+            // Write to byte array
+            ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+            workbook.write(outputStream);
+            return outputStream.toByteArray();
+        }
+    }
+
+    /**
+     * Create instruction sheet for sample template with format help message.
+     */
+    private void createSampleInstructionSheet(Sheet sheet, Workbook workbook) {
+        CellStyle headerStyle = workbook.createCellStyle();
+        Font headerFont = workbook.createFont();
+        headerFont.setBold(true);
+        headerFont.setFontHeightInPoints((short) 14);
+        headerStyle.setFont(headerFont);
+
+        CellStyle warningStyle = workbook.createCellStyle();
+        Font warningFont = workbook.createFont();
+        warningFont.setBold(true);
+        warningFont.setColor(IndexedColors.RED.getIndex());
+        warningStyle.setFont(warningFont);
+
+        CellStyle infoStyle = workbook.createCellStyle();
+        Font infoFont = workbook.createFont();
+        infoFont.setColor(IndexedColors.BLUE.getIndex());
+        infoStyle.setFont(infoFont);
+
+        String[][] instructions = {
+                {"ATTENDANCE IMPORT - SAMPLE TEMPLATE"},
+                {""},
+                {"This is a SAMPLE template showing the exact format required for attendance import."},
+                {"Please download your organization's template and replace the data in the same format."},
+                {""},
+                {"FORMAT REQUIREMENTS:"},
+                {"• Sheet name: 'List of Logs'"},
+                {"• Row 1: Title 'List of Logs'"},
+                {"• Row 3: Period information (Month/Year)"},
+                {"• Row 4: Day numbers (1, 2, 3... 31)"},
+                {"• Data rows: Employee info followed by punch times"},
+                {""},
+                {"PUNCH TIME FORMAT:"},
+                {"• Use 24-hour format: HH:MM (e.g., 09:00, 17:30)"},
+                {"• IN and OUT on separate lines (use Alt+Enter for new line)"},
+                {"• Example: '09:00' (line 1) and '17:30' (line 2)"},
+                {"• Multiple punches: Each time on a new line"},
+                {"• Leave cell empty for absent/no punch days"},
+                {""},
+                {"IMPORTANT:"},
+                {"• Employee code must match exactly with the code in your system"},
+                {"• Weekends (Sat/Sun) can be left empty or filled if overtime"},
+                {""},
+                {"NEED HELP?"},
+                {"If your biometric machine exports data in a different format,"},
+                {"please contact our support team:"},
+                {""},
+                {"Email: support@hrms.com"},
+                {""},
+                {"Share your attendance logs format and we will help you convert it."},
+                {"Our team will respond within 24 hours."}
+        };
+
+        for (int i = 0; i < instructions.length; i++) {
+            Row row = sheet.createRow(i);
+            Cell cell = row.createCell(0);
+            cell.setCellValue(instructions[i][0]);
+            
+            if (i == 0) {
+                cell.setCellStyle(headerStyle);
+            } else if (i == 5 || i == 12 || i == 19 || i == 21) {
+                cell.setCellStyle(headerStyle);
+            } else if (i >= 24 && i <= 27) {
+                cell.setCellStyle(infoStyle);
+            }
+        }
+
+        sheet.setColumnWidth(0, 80 * 256);
+    }
+
+    /**
      * Create instruction sheet with field descriptions for matrix-style template.
      */
     private void createInstructionSheet(Sheet sheet, Workbook workbook) {

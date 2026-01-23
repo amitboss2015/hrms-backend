@@ -21,14 +21,13 @@ import java.util.Optional;
  * Filter to resolve tenant from incoming requests.
  * 
  * Resolution order:
- * 1. JWT token (if present and valid)
- * 2. Subdomain (sasacollection.hrms.in)
- * 3. X-Tenant-Id header
- * 4. tenantId query parameter
- * 5. Default tenant (for development)
+ * 1. Subdomain (sasacollection.hrms.in)
+ * 2. X-Tenant-Id header
+ * 3. tenantId query parameter
+ * 4. Default tenant (for development)
  */
 @Component
-@Order(100) // Run after security filters have processed JWT
+@Order(100)  // Run AFTER Spring Security filters (including JwtAuthenticationFilter)
 @RequiredArgsConstructor
 @Slf4j
 public class TenantFilter extends OncePerRequestFilter {
@@ -67,9 +66,8 @@ public class TenantFilter extends OncePerRequestFilter {
         
         try {
             // Check if tenant was already set by JwtAuthenticationFilter
-            String existingTenant = TenantContext.getTenantId();
-            if (existingTenant != null && !existingTenant.isBlank()) {
-                log.debug("Tenant already set from JWT: {}", existingTenant);
+            if (TenantContext.getTenantId() != null) {
+                log.debug("Tenant already set from JWT: {}", TenantContext.getTenantId());
                 filterChain.doFilter(request, response);
                 return;
             }

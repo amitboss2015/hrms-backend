@@ -4,6 +4,7 @@ import com.example.hrms.domain.Holiday;
 import com.example.hrms.domain.WeeklyOffConfig;
 import com.example.hrms.domain.enums.EmploymentType;
 import com.example.hrms.service.HolidayService;
+import com.example.hrms.tenant.TenantContext;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -22,9 +23,11 @@ public class HolidayController {
     // =========== Holidays ===========
 
     @GetMapping
-    public List<Holiday> listHolidays(@RequestParam String orgId,
+    public List<Holiday> listHolidays(@RequestParam(required = false) String orgId,
                                        @RequestParam(required = false) Integer year) {
-        return service.getHolidays(orgId, year);
+        // Use tenant from context if orgId not provided
+        String effectiveOrgId = orgId != null ? orgId : TenantContext.getTenantId();
+        return service.getHolidays(effectiveOrgId, year);
     }
 
     @PostMapping

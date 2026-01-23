@@ -466,7 +466,101 @@ public class AttendanceImportController {
         }
     }
 
-    // ==================== TEMPLATE DOWNLOAD ====================
+    // ==================== TEMPLATE & FORMAT HELP ====================
+
+    /**
+     * Get attendance template information with format instructions.
+     * Returns template details and guidance for users.
+     */
+    @GetMapping("/template/info")
+    public ResponseEntity<Map<String, Object>> getTemplateInfo() {
+        Map<String, Object> info = new HashMap<>();
+        
+        info.put("title", "Attendance Import Template");
+        info.put("description", "Download the sample attendance template and replace with your data in the exact same format.");
+        
+        // Format instructions
+        Map<String, Object> format = new HashMap<>();
+        format.put("fileType", "Excel (.xlsx)");
+        format.put("sheetName", "List of Logs");
+        format.put("row1", "Title: 'List of Logs'");
+        format.put("row3", "Period information (Month/Year)");
+        format.put("row4", "Day numbers (1, 2, 3, ... 31)");
+        format.put("dataRows", "For each employee: Employee Code/Name, followed by punch times");
+        format.put("punchFormat", "HH:mm or HH:mm:ss (24-hour format) - Multiple punches separated by comma");
+        info.put("format", format);
+        
+        // Sample data
+        info.put("sampleData", Map.of(
+            "employee", "EMP001 - John Doe",
+            "day1", "09:05, 13:00, 14:00, 18:30",
+            "day2", "08:58, 18:15",
+            "explanation", "Each cell contains IN/OUT punch times for that day"
+        ));
+        
+        // Help message
+        info.put("helpMessage", "If your biometric machine exports data in a different format, " +
+                "please contact our support team. Share your attendance logs format and we will help you.");
+        info.put("supportEmail", "support@hrms.com");
+        info.put("downloadUrl", "/api/attendance/template/download");
+        info.put("sampleDownloadUrl", "/api/attendance/template/sample");
+        
+        return ResponseEntity.ok(info);
+    }
+
+    /**
+     * Download a SAMPLE attendance template with example data.
+     * This shows users the exact format they need to follow.
+     */
+    @GetMapping("/template/sample")
+    public ResponseEntity<byte[]> downloadSampleTemplate() {
+        try {
+            byte[] sample = attendanceExcelService.generateSampleTemplate();
+            
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=attendance_sample_template.xlsx")
+                    .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                    .body(sample);
+        } catch (Exception e) {
+            log.error("Error generating sample template", e);
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    /**
+     * Request format help from administrator.
+     * Sends notification to superadmin about user's format compatibility issue.
+     */
+    @PostMapping("/template/request-help")
+    public ResponseEntity<Map<String, Object>> requestFormatHelp(
+            @RequestBody Map<String, String> request,
+            @RequestParam(value = "file", required = false) MultipartFile sampleFile) {
+        
+        String tenantId = TenantContext.getTenantId();
+        String userEmail = request.get("email");
+        String userName = request.get("name");
+        String message = request.get("message");
+        String biometricDevice = request.get("biometricDevice");
+        
+        log.info("Format help request from tenant={}, user={}, device={}", tenantId, userEmail, biometricDevice);
+        
+        // TODO: Send email notification to superadmin
+        // For now, log the request
+        log.info("=== FORMAT HELP REQUEST ===");
+        log.info("Tenant: {}", tenantId);
+        log.info("User: {} ({})", userName, userEmail);
+        log.info("Biometric Device: {}", biometricDevice);
+        log.info("Message: {}", message);
+        log.info("===========================");
+        
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", true);
+        response.put("message", "Your request has been submitted. Our support team will contact you shortly at " + userEmail);
+        response.put("ticketId", "FMT-" + System.currentTimeMillis());
+        response.put("supportEmail", "support@hrms.com");
+        
+        return ResponseEntity.ok(response);
+    }
 
     /**
      * Download the attendance import template for a specific month/year and biometric device.

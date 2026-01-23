@@ -50,6 +50,16 @@ public class ShiftService {
     }
 
     /**
+     * Get shift by ID for current tenant
+     */
+    public Optional<Shift> getById(Long id) {
+        String tid = TenantContext.getTenantId();
+        final String tenantId = (tid == null || tid.isEmpty()) ? "ORG001" : tid;
+        return repo.findById(id)
+                .filter(s -> tenantId.equals(s.getTenantId()));
+    }
+
+    /**
      * Upsert shift with tenant support
      */
     @Transactional

@@ -23,6 +23,11 @@ public class ShiftController {
     return service.getByCode(code).map(ResponseEntity::ok).orElse(ResponseEntity.notFound().build());
   }
 
+  @GetMapping("/id/{id}")
+  public ResponseEntity<Shift> getById(@PathVariable Long id){
+    return service.getById(id).map(ResponseEntity::ok).orElse(ResponseEntity.notFound().build());
+  }
+
   @PostMapping
   public ResponseEntity<Shift> create(@Valid @RequestBody Shift s){
     Shift saved = service.upsert(s);
