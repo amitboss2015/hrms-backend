@@ -513,33 +513,18 @@ public class AttendanceImportController {
      * Download a SAMPLE attendance template with real example data.
      * This is a STATIC Excel file from actual biometric machine export.
      * Shows users the exact format they need to follow.
-     * 
-     * @param type - "ladies" or "gents" (default: ladies)
      */
     @GetMapping("/template/sample")
-    public ResponseEntity<byte[]> downloadSampleTemplate(
-            @RequestParam(value = "type", defaultValue = "ladies") String type) {
+    public ResponseEntity<byte[]> downloadSampleTemplate() {
         try {
-            // Determine which sample file to serve
-            String filename;
-            if ("gents".equalsIgnoreCase(type)) {
-                filename = "templates/attednace_logs_gents.xlsx";
-            } else {
-                filename = "templates/attednace_logs_ladies.xlsx";
-            }
-            
             // Load static Excel file from resources directly - NO conversion needed
             org.springframework.core.io.ClassPathResource resource = 
-                new org.springframework.core.io.ClassPathResource(filename);
+                new org.springframework.core.io.ClassPathResource("templates/attednace_logs.xlsx");
             
             byte[] excelData = resource.getInputStream().readAllBytes();
             
-            String downloadFilename = "gents".equalsIgnoreCase(type) 
-                ? "attendance_sample_gents.xlsx" 
-                : "attendance_sample_ladies.xlsx";
-            
             return ResponseEntity.ok()
-                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=" + downloadFilename)
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=attendance_sample_template.xlsx")
                     .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
                     .body(excelData);
                     
