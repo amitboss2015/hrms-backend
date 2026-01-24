@@ -7,6 +7,7 @@ import com.example.hrms.admin.service.CompanyManagementService;
 import com.example.hrms.admin.service.FraudDetectionService;
 import com.example.hrms.attendance.domain.BiometricDevice;
 import com.example.hrms.attendance.repo.BiometricDeviceRepository;
+import com.example.hrms.registration.service.CompanyRegistrationService;
 import com.example.hrms.tenant.domain.Tenant;
 import com.example.hrms.tenant.repo.TenantRepository;
 import lombok.RequiredArgsConstructor;
@@ -35,6 +36,7 @@ public class AdminDashboardController {
     private final AdminDashboardService dashboardService;
     private final FraudDetectionService fraudService;
     private final CompanyManagementService companyService;
+    private final CompanyRegistrationService registrationService;
     private final BiometricDeviceRepository deviceRepo;
     private final TenantRepository tenantRepo;
     private final JdbcTemplate jdbcTemplate;
@@ -143,6 +145,54 @@ public class AdminDashboardController {
             "message", "Registration deleted successfully",
             "tenantId", tenantId
         ));
+    }
+
+    /**
+     * Manually activate a company by email (when email activation fails)
+     * Super Admin can use this to activate companies without email link
+     */
+    @PostMapping("/activate-by-email")
+    public ResponseEntity<Map<String, Object>> manualActivateByEmail(
+            @RequestParam String email,
+            Authentication auth) {
+        try {
+            // Find pending registration by email
+            var registration = registrationService.findPendingRegistrationByEmail(email);
+            
+            if (registration == null) {
+                return ResponseEntity.badRequest().body(Map.of(
+                    "success", false,
+                    "error", "No pending registration found for email: " + email
+                ));
+            }
+            
+            if (registration.getActivated()) {
+                return ResponseEntity.badRequest().body(Map.of(
+                    "success", false,
+                    "error", "This company is already activated. Tenant ID: " + registration.getTenantId()
+                ));
+            }
+            
+            // Activate using the token
+            var result = registrationService.activateCompany(registration.getActivationToken());
+            
+            String activatedBy = auth != null ? auth.getName() : "SUPER_ADMIN";
+            log.info("✅ Manual activation by {}: {} -> {}", activatedBy, email, result.getTenantId());
+            
+            return ResponseEntity.ok(Map.of(
+                "success", result.isSuccess(),
+                "message", "Company activated successfully by " + activatedBy,
+                "tenantId", result.getTenantId() != null ? result.getTenantId() : "N/A",
+                "subdomain", result.getSubdomain() != null ? result.getSubdomain() : "N/A",
+                "email", email
+            ));
+        } catch (Exception e) {
+            log.error("❌ Manual activation failed for {}: {}", email, e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                "success", false,
+                "error", "Activation failed: " + e.getMessage()
+            ));
+        }
     }
 
     /**

@@ -482,4 +482,21 @@ public class CompanyRegistrationService {
         
         return localPart + "@" + domain;
     }
+    
+    /**
+     * Find pending registration by email (for manual activation by Super Admin)
+     */
+    public CompanyRegistration findPendingRegistrationByEmail(String email) {
+        String normalizedEmail = normalizeEmail(email);
+        
+        // Try original email first
+        Optional<CompanyRegistration> registration = registrationRepo.findByEmailAndActivatedFalse(email);
+        
+        // If not found and email was normalized, try normalized version
+        if (registration.isEmpty() && !email.equals(normalizedEmail)) {
+            registration = registrationRepo.findByEmailAndActivatedFalse(normalizedEmail);
+        }
+        
+        return registration.orElse(null);
+    }
 }
