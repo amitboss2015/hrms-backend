@@ -314,10 +314,9 @@ public class EmployeeExcelService {
                             targetDevice.getId(), deviceEmpCode);
                     
                     if (existingByDevice.isPresent()) {
-                        // Already imported - skip as duplicate in this device
-                        result.setSkippedCount(result.getSkippedCount() + 1);
-                        result.addError(rowNum, originalEmpCode, "", 
-                            "Already imported in device " + targetDevice.getDeviceCode() + " - skipping");
+                        // Already imported - skip as duplicate in this device (use addSkipped, not addError)
+                        result.addSkipped(rowNum, originalEmpCode, 
+                            "Already exists in device " + targetDevice.getDeviceCode());
                         continue;
                     }
                     
@@ -326,16 +325,30 @@ public class EmployeeExcelService {
                     
                     // Check if this generated code already exists
                     if (employeeRepo.existsByTenantIdAndEmpCode(tenantId, hrmsEmpCode)) {
-                        // This shouldn't happen normally, but handle it
-                        result.setSkippedCount(result.getSkippedCount() + 1);
-                        result.addError(rowNum, originalEmpCode, "", 
-                            "Generated code " + hrmsEmpCode + " already exists - skipping");
+                        // This shouldn't happen normally, but handle it (use addSkipped)
+                        result.addSkipped(rowNum, originalEmpCode, 
+                            "Generated code " + hrmsEmpCode + " already exists");
                         continue;
+                    }
+                    
+                    // Check if same name+empCode exists in another device (potential duplicate person)
+                    String firstName = dto.getFirstName() != null ? dto.getFirstName().trim().toUpperCase() : "";
+                    String lastName = dto.getLastName() != null ? dto.getLastName().trim().toUpperCase() : "";
+                    List<Employee> sameNameEmployees = employeeRepo.findByTenantIdAndFirstNameIgnoreCaseAndLastNameIgnoreCase(
+                            tenantId, firstName, lastName);
+                    
+                    for (Employee existing : sameNameEmployees) {
+                        // Same name exists in a different device - add warning
+                        if (existing.getBiometricDevice() != null && 
+                            !existing.getBiometricDevice().getId().equals(targetDevice.getId())) {
+                            result.addDuplicateWarning(rowNum, originalEmpCode, dto.getFirstName(), dto.getLastName(),
+                                    existing.getBiometricDevice().getDeviceCode(), targetDevice.getDeviceCode());
+                        }
                     }
                 } else {
                     // Default device - use original logic
                     if (employeeRepo.existsByTenantIdAndEmpCode(tenantId, hrmsEmpCode)) {
-                        result.addError(rowNum, originalEmpCode, "", "Emp Code already exists: " + hrmsEmpCode);
+                        result.addSkipped(rowNum, originalEmpCode, "Emp Code already exists: " + hrmsEmpCode);
                         continue;
                     }
                 }
@@ -386,17 +399,34 @@ public class EmployeeExcelService {
                 result.setSuccessCount(savedCount);
             }
 
-            result.setErrorCount(result.getErrors().size());
+            // Set proper counts (errorCount is already incremented by addError())
             result.setSuccess(result.getErrors().isEmpty() && result.getSuccessCount() > 0);
             
-            if (result.getSuccessCount() > 0 && result.getErrors().isEmpty()) {
-                result.setMessage(String.format("Successfully imported %d employees", result.getSuccessCount()));
+            // Check if there are duplicate warnings (same name in different device)
+            if (!result.getDuplicateWarnings().isEmpty()) {
+                result.setRequiresConfirmation(true);
+            }
+            
+            // Build appropriate message
+            if (result.getSuccessCount() > 0 && result.getErrors().isEmpty() && result.getSkippedCount() == 0) {
+                result.setMessage(String.format("Successfully imported %d employees!", result.getSuccessCount()));
             } else if (result.getSuccessCount() > 0) {
-                result.setMessage(String.format("Import completed with some errors. Success: %d, Errors: %d, Skipped: %d",
-                        result.getSuccessCount(), result.getErrorCount(), result.getSkippedCount()));
+                StringBuilder msg = new StringBuilder();
+                msg.append(String.format("Imported %d new employees", result.getSuccessCount()));
+                if (result.getSkippedCount() > 0) {
+                    msg.append(String.format(", %d already exist (skipped)", result.getSkippedCount()));
+                }
+                if (result.getErrorCount() > 0) {
+                    msg.append(String.format(", %d had errors", result.getErrorCount()));
+                }
+                result.setMessage(msg.toString());
+            } else if (result.getSkippedCount() > 0 && result.getErrorCount() == 0) {
+                result.setMessage(String.format("All %d employees already exist in this device (no new imports)", 
+                        result.getSkippedCount()));
+                result.setSuccess(true); // Not a failure, just nothing new to import
             } else {
-                result.setMessage(String.format("Import failed. Errors: %d, Skipped: %d. Please check the errors below.",
-                        result.getErrorCount(), result.getSkippedCount()));
+                result.setMessage(String.format("Import failed. %d errors found. Please check below.", 
+                        result.getErrorCount()));
             }
 
             return result;

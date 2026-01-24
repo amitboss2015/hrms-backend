@@ -118,4 +118,10 @@ public interface EmployeeRepository extends JpaRepository<Employee, Long> {
     boolean existsByDeviceIdAndDeviceEmpCode(@Param("deviceId") Long deviceId, 
                                               @Param("deviceEmpCode") String deviceEmpCode,
                                               @Param("excludeEmpId") Long excludeEmpId);
+    
+    /**
+     * Find employees with same first name and last name (case-insensitive) for duplicate detection
+     */
+    List<Employee> findByTenantIdAndFirstNameIgnoreCaseAndLastNameIgnoreCase(
+            String tenantId, String firstName, String lastName);
 }
