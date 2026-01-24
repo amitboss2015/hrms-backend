@@ -244,16 +244,20 @@ public class EmployeeExcelService {
             List<Employee> employeesToSave = new ArrayList<>();
             Set<String> processedEmpCodes = new HashSet<>();
             int rowNum = 1; // Start from 1 (after header)
+            int actualDataRows = 0; // Count only non-empty rows
 
             while (rowIterator.hasNext()) {
                 rowNum++;
                 Row row = rowIterator.next();
                 
-                // Skip empty rows
+                // Skip empty rows - don't count these in any statistics
                 if (isEmptyRow(row)) {
-                    result.setSkippedCount(result.getSkippedCount() + 1);
+                    // Empty rows are silently skipped, not counted anywhere
                     continue;
                 }
+                
+                // This is a non-empty data row
+                actualDataRows++;
 
                 EmployeeDTO dto = parseRow(row, columnIndex, rowNum, result);
                 
@@ -365,7 +369,7 @@ public class EmployeeExcelService {
                 employeesToSave.add(employee);
             }
 
-            result.setTotalRows(rowNum - 1);
+            result.setTotalRows(actualDataRows); // Only count non-empty rows
 
             // Save valid employees one by one for better error tracking
             if (!employeesToSave.isEmpty()) {
