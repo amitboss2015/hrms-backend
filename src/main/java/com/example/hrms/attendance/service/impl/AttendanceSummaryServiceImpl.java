@@ -204,6 +204,16 @@ public class AttendanceSummaryServiceImpl implements AttendanceSummaryService {
             // Calculate total working days (excluding weekly off and holidays)
             int totalWorkingDays = totalDaysInMonth - c.weeklyOff - c.holidays;
             
+            // Calculate absent days properly
+            // Absent = Total working days - (present + leave + halfDays counted as partial)
+            // Note: halfDays count as 0.5 present, so they contribute 0.5 to absent
+            int calculatedDaysAccounted = c.present + c.leave + c.halfDays + c.absent;
+            int calculatedAbsent = totalWorkingDays - calculatedDaysAccounted;
+            // Use the higher of recorded absent or calculated absent
+            int effectiveAbsent = Math.max(c.absent, calculatedAbsent);
+            // Make sure absent is not negative
+            if (effectiveAbsent < 0) effectiveAbsent = 0;
+            
             // Get payroll info
             Payroll payroll = payrollMap.get(empCode);
             
@@ -216,7 +226,7 @@ public class AttendanceSummaryServiceImpl implements AttendanceSummaryService {
                     .shiftName(shiftName)
                     .totalWorkingDays(totalWorkingDays)
                     .present(c.present)
-                    .absent(c.absent)
+                    .absent(effectiveAbsent)
                     .leaveDays(c.leave)
                     .leave(c.leave)
                     .halfDays(c.halfDays)

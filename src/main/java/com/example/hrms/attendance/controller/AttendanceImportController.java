@@ -15,6 +15,7 @@ import com.example.hrms.attendance.repo.ImportErrorRepository;
 import com.example.hrms.attendance.service.AttendanceEngine;
 import com.example.hrms.attendance.service.AttendanceExcelService;
 import com.example.hrms.attendance.service.AttendanceImportService;
+import com.example.hrms.service.AssignmentService;
 import com.example.hrms.tenant.TenantContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -49,6 +50,7 @@ public class AttendanceImportController {
     private final ImportedFileService importedFileService;
     private final com.example.hrms.payroll.repo.PayrollRepository payrollRepo;
     private final com.example.hrms.loan.service.LoanService loanService;
+    private final AssignmentService assignmentService;
     
     // Maximum number of attendance Excel files to keep per device/month/year
     private static final int MAX_FILES_PER_MONTH = 3;
@@ -230,6 +232,48 @@ public class AttendanceImportController {
             result.put("uploadedBy", b.getUploadedBy());
         }
         return ResponseEntity.ok(result);
+    }
+    
+    /**
+     * Pre-import validation: Check if all employees have shift assignments.
+     * Returns warning if some employees are not assigned to any shift.
+     * These employees will be flagged as "parked" and excluded from calculations.
+     */
+    @GetMapping("/import/validate-shifts")
+    public ResponseEntity<Map<String, Object>> validateShiftAssignments() {
+        try {
+            Map<String, Object> status = assignmentService.getShiftAssignmentStatus();
+            
+            Map<String, Object> result = new HashMap<>();
+            result.put("totalEmployees", status.get("totalEmployees"));
+            result.put("withShift", status.get("withShift"));
+            result.put("withoutShift", status.get("withoutShift"));
+            result.put("unassignedEmployees", status.get("unassignedEmployees"));
+            result.put("canProceed", true); // Always allow but with warning
+            
+            // Add warnings/messages
+            int withoutShift = ((Number) status.get("withoutShift")).intValue();
+            if (withoutShift > 0) {
+                result.put("warning", true);
+                result.put("warningMessage", withoutShift + " employees are not assigned to any shift. " +
+                    "Their attendance will be imported but they will be marked as 'parked' " +
+                    "and excluded from payroll calculations until a shift is assigned.");
+                result.put("warningMessageHindi", withoutShift + " कर्मचारियों को किसी शिफ्ट में असाइन नहीं किया गया है। " +
+                    "उनकी उपस्थिति आयात की जाएगी लेकिन उन्हें 'पार्क्ड' के रूप में चिह्नित किया जाएगा " +
+                    "और शिफ्ट असाइन होने तक पेरोल गणना से बाहर रखा जाएगा।");
+            } else {
+                result.put("warning", false);
+                result.put("message", "All employees have shift assignments. Ready to import.");
+            }
+            
+            return ResponseEntity.ok(result);
+        } catch (Exception e) {
+            log.error("Error validating shift assignments", e);
+            Map<String, Object> result = new HashMap<>();
+            result.put("error", true);
+            result.put("message", e.getMessage());
+            return ResponseEntity.status(500).body(result);
+        }
     }
 
     /**

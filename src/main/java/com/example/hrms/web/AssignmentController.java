@@ -3,6 +3,7 @@ package com.example.hrms.web;
 
 import com.example.hrms.domain.EmployeeShiftAssignment;
 import com.example.hrms.service.AssignmentService;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -33,6 +34,24 @@ public class AssignmentController {
     public List<EmployeeShiftAssignment> listByShift(@PathVariable String shiftCode) {
         List<EmployeeShiftAssignment> result = service.listByShiftCode(shiftCode);
         return result;
+    }
+    
+    /**
+     * Get shift assignment status for all employees.
+     * Returns count of employees with/without shift assignments and list of unassigned employees.
+     */
+    @GetMapping("/assignment-status")
+    public ResponseEntity<Map<String, Object>> getShiftAssignmentStatus() {
+        return ResponseEntity.ok(service.getShiftAssignmentStatus());
+    }
+    
+    /**
+     * Assign default shift to all employees without shift assignments.
+     * @param shiftCode The shift code to assign (e.g., "GENERAL")
+     */
+    @PostMapping("/assign-default/{shiftCode}")
+    public ResponseEntity<Map<String, Object>> assignDefaultShiftToAll(@PathVariable String shiftCode) {
+        return ResponseEntity.ok(service.assignDefaultShiftToAll(shiftCode));
     }
 }
 
