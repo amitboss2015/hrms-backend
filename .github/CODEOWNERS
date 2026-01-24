@@ -1,0 +1,21 @@
+# ============================================
+# CODEOWNERS - Auto-assign reviewers for PRs
+# ============================================
+# Amit Kumar is the owner and must review all PRs
+
+# Default owner for everything
+* @amitboss2015
+
+# Backend Java code
+/src/ @amitboss2015
+
+# Database scripts
+/scripts/ @amitboss2015
+
+# Configuration files
+/pom.xml @amitboss2015
+/docker-compose.yml @amitboss2015
+
+# Documentation
+/docs/ @amitboss2015
+*.md @amitboss2015

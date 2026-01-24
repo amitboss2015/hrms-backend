@@ -171,7 +171,14 @@ public class SecurityConfig {
             "http://127.0.0.1:*",
             "http://192.168.*.*:*",      // Local network
             "http://104.30.163.123:*",   // Your public IP
-            "https://*.hrms.in"          // Production subdomains
+            "https://*.hrms.in",         // Production subdomains
+            "https://chandrahr.in",      // Main domain
+            "https://www.chandrahr.in",  // WWW subdomain
+            "http://chandrahr.in",       // HTTP fallback
+            "http://www.chandrahr.in",   // HTTP WWW fallback
+            "https://*.chandrahr.in",    // All chandrahr.in subdomains
+            "http://52.66.34.89:*",      // AWS EC2 IP
+            "https://52.66.34.89:*"      // AWS EC2 IP HTTPS
         ));
         
         configuration.setAllowedMethods(Arrays.asList(

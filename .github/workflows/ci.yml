@@ -1,0 +1,66 @@
+# ============================================
+# CI Workflow - Build & Test on every PR
+# ============================================
+name: CI - Build & Test
+
+on:
+  pull_request:
+    branches:
+      - develop
+      - master
+  push:
+    branches:
+      - develop
+
+jobs:
+  build-and-test:
+    name: Build & Test Backend
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: testpass
+          MYSQL_DATABASE: payroll_hrms_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: ☕ Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: 🔨 Build with Maven
+        run: mvn clean compile -q
+
+      - name: 🧪 Run Tests
+        run: mvn test -q
+        env:
+          SPRING_DATASOURCE_URL: jdbc:mysql://localhost:3306/payroll_hrms_test
+          SPRING_DATASOURCE_USERNAME: root
+          SPRING_DATASOURCE_PASSWORD: testpass
+
+      - name: 📦 Package JAR
+        run: mvn package -DskipTests -q
+
+      - name: 📤 Upload JAR Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-jar
+          path: target/*.jar
+          retention-days: 7
+
+      - name: ✅ Build Success
+        run: echo "Backend build successful!"
