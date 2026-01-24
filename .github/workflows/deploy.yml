@@ -6,7 +6,7 @@ name: 🚀 Deploy to Production
 on:
   push:
     branches:
-      - master
+      - develop  # Auto-deploy when pushed to develop
 
 jobs:
   build:
