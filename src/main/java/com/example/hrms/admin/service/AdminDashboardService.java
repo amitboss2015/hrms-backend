@@ -27,6 +27,7 @@ public class AdminDashboardService {
     private final TrialTrackingRepository trialRepo;
     private final RegistrationAttemptRepository attemptRepo;
     private final TenantRepository tenantRepo;
+    private final CompanyManagementService companyService;
 
     /**
      * Get dashboard overview statistics
@@ -222,19 +223,14 @@ public class AdminDashboardService {
 
     /**
      * Delete a registration (spam/fake)
+     * NOTE: This is a FULL permanent delete - clears ALL data including users,
+     * company_registrations, registration_attempts, etc.
      */
     @Transactional
     public void deleteRegistration(String tenantId) {
-        TrialTracking trial = trialRepo.findByTenantId(tenantId)
-            .orElseThrow(() -> new RuntimeException("Trial not found: " + tenantId));
-
-        // Delete tenant
-        tenantRepo.deleteById(tenantId);
-        
-        // Delete trial tracking
-        trialRepo.delete(trial);
-
-        log.info("Registration deleted: {}", tenantId);
+        // Use CompanyManagementService for complete cleanup
+        companyService.permanentDeleteCompany(tenantId, "SUPER_ADMIN (spam/fake cleanup)");
+        log.info("Registration fully deleted: {}", tenantId);
     }
 
     /**
