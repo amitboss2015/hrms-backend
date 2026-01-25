@@ -176,7 +176,11 @@ public class CompanyManagementService {
         // 10. Registration and trial tracking
         deletedCounts.put("registration_attempts", deleteRegistrationAttempts(tenantId));
         deletedCounts.put("trial_tracking", deleteByTenantId("trial_tracking", tenantId));
-        deletedCounts.put("company_registrations", deleteByTenantId("company_registrations", tenantId));
+        
+        // Delete company_registrations by tenant_id AND by email (to catch both activated and pending)
+        int regByTenant = deleteByTenantId("company_registrations", tenantId);
+        int regByEmail = deleteCompanyRegistrationsByTenantEmail(tenantId);
+        deletedCounts.put("company_registrations", regByTenant + regByEmail);
 
         // 11. Finally delete the tenant
         tenantRepo.deleteById(tenantId);
@@ -257,6 +261,33 @@ public class CompanyManagementService {
             return totalDeleted;
         } catch (Exception e) {
             log.debug("Could not delete registration_attempts: {}", e.getMessage());
+            return 0;
+        }
+    }
+    
+    /**
+     * Delete company_registrations by email (to catch registrations that might not have tenant_id set yet)
+     * Gets email from users table for this tenant
+     */
+    private int deleteCompanyRegistrationsByTenantEmail(String tenantId) {
+        try {
+            // Get admin email from users table for this tenant
+            String emailSql = "SELECT email FROM users WHERE tenant_id = ? AND role = 'ADMIN' LIMIT 1";
+            List<String> emails = jdbcTemplate.queryForList(emailSql, String.class, tenantId);
+            
+            int totalDeleted = 0;
+            for (String email : emails) {
+                // Delete by email (catches both activated and pending registrations)
+                String deleteSql = "DELETE FROM company_registrations WHERE email = ?";
+                int deleted = jdbcTemplate.update(deleteSql, email);
+                totalDeleted += deleted;
+                if (deleted > 0) {
+                    log.info("  Deleted {} company_registrations by email {} for tenant {}", deleted, email, tenantId);
+                }
+            }
+            return totalDeleted;
+        } catch (Exception e) {
+            log.debug("Could not delete company_registrations by email: {}", e.getMessage());
             return 0;
         }
     }

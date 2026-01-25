@@ -7,6 +7,8 @@ import com.example.hrms.admin.service.CompanyManagementService;
 import com.example.hrms.admin.service.FraudDetectionService;
 import com.example.hrms.attendance.domain.BiometricDevice;
 import com.example.hrms.attendance.repo.BiometricDeviceRepository;
+import com.example.hrms.registration.domain.CompanyRegistration;
+import com.example.hrms.registration.repo.CompanyRegistrationRepository;
 import com.example.hrms.registration.service.CompanyRegistrationService;
 import com.example.hrms.tenant.domain.Tenant;
 import com.example.hrms.tenant.repo.TenantRepository;
@@ -37,6 +39,7 @@ public class AdminDashboardController {
     private final FraudDetectionService fraudService;
     private final CompanyManagementService companyService;
     private final CompanyRegistrationService registrationService;
+    private final CompanyRegistrationRepository registrationRepo;
     private final BiometricDeviceRepository deviceRepo;
     private final TenantRepository tenantRepo;
     private final JdbcTemplate jdbcTemplate;
@@ -145,6 +148,33 @@ public class AdminDashboardController {
             "message", "Registration deleted successfully",
             "tenantId", tenantId
         ));
+    }
+
+    /**
+     * Get all pending registrations (not yet activated)
+     */
+    @GetMapping("/pending-registrations")
+    public ResponseEntity<List<Map<String, Object>>> getPendingRegistrations() {
+        List<CompanyRegistration> pending = registrationRepo.findAll().stream()
+                .filter(reg -> !reg.getActivated())
+                .sorted((a, b) -> b.getCreatedAt().compareTo(a.getCreatedAt())) // Newest first
+                .collect(java.util.stream.Collectors.toList());
+        
+        List<Map<String, Object>> result = pending.stream().map(reg -> {
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("id", reg.getId());
+            map.put("companyName", reg.getCompanyName());
+            map.put("adminEmail", reg.getEmail());
+            map.put("adminName", reg.getAdminName());
+            map.put("phone", reg.getPhone());
+            map.put("subdomain", reg.getSubdomain());
+            map.put("createdAt", reg.getCreatedAt());
+            map.put("tenantId", reg.getTenantId());
+            map.put("trialStatus", "PENDING");
+            return map;
+        }).collect(java.util.stream.Collectors.toList());
+        
+        return ResponseEntity.ok(result);
     }
 
     /**
