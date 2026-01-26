@@ -10,6 +10,7 @@ import com.example.hrms.attendance.dto.ImportResultDTO;
 import com.example.hrms.attendance.repo.AttendanceDayRepository;
 import com.example.hrms.attendance.repo.AttendancePunchRepository;
 import com.example.hrms.attendance.repo.AttendanceSessionRepository;
+import com.example.hrms.attendance.repo.BiometricDeviceRepository;
 import com.example.hrms.attendance.repo.ImportBatchRepository;
 import com.example.hrms.attendance.repo.ImportErrorRepository;
 import com.example.hrms.attendance.service.AttendanceEngine;
@@ -51,6 +52,7 @@ public class AttendanceImportController {
     private final com.example.hrms.payroll.repo.PayrollRepository payrollRepo;
     private final com.example.hrms.loan.service.LoanService loanService;
     private final AssignmentService assignmentService;
+    private final BiometricDeviceRepository deviceRepo;
     
     // Maximum number of attendance Excel files to keep per device/month/year
     private static final int MAX_FILES_PER_MONTH = 3;
@@ -91,31 +93,55 @@ public class AttendanceImportController {
      * Import attendance from biometric Excel file.
      * The file should have a "Logs" sheet (Sheet 2) with day-wise punch times.
      * 
-     * @param deviceId Optional device ID for multi-device support. If not provided, uses direct emp_code matching.
+     * VALIDATION:
+     * - If file was generated from our template, it contains embedded tenant/device metadata
+     * - Validates that uploaded file matches the selected device and tenant
+     * - If validation fails, returns error with clear message
+     * 
+     * @param deviceId REQUIRED device ID for multi-device support. Must match the device used to generate the template.
      */
     @PostMapping("/import")
     public ResponseEntity<ImportResultDTO> importFile(
             @RequestParam("file") MultipartFile file,
             @RequestParam("month") int month,
             @RequestParam("year") int year,
-            @RequestParam(value = "deviceId", required = false) Long deviceId,
+            @RequestParam("deviceId") Long deviceId,
             @RequestHeader(value = "X-User", required = false) String uploadedBy) {
 
         String tenantId = TenantContext.getTenantId();
-        // Use tenant ID hash as org ID for multi-tenancy
         Long orgId = getOrgIdFromTenant(tenantId);
         log.info("Import request: tenant={}, orgId={}, device={}, month={}, year={}", tenantId, orgId, deviceId, month, year);
         
-        ImportResultDTO result;
-        if (deviceId != null) {
-            // Use device-aware import
-            result = importService.importLogsExcelWithDevice(orgId, tenantId, deviceId, file, month, year, 
-                uploadedBy == null ? "admin" : uploadedBy);
-        } else {
-            // Use standard import (backward compatible)
-            result = importService.importLogsExcel(orgId, tenantId, file, month, year, 
-                uploadedBy == null ? "admin" : uploadedBy);
+        // Validate device exists and belongs to tenant
+        var deviceOpt = deviceRepo.findById(deviceId);
+        if (deviceOpt.isEmpty() || !deviceOpt.get().getTenantId().equals(tenantId)) {
+            return ResponseEntity.badRequest().body(ImportResultDTO.builder()
+                    .batchId(null)
+                    .total(0).success(0).failed(0)
+                    .message("Invalid device selected. Device not found or does not belong to your organization.")
+                    .duplicate(false)
+                    .build());
         }
+        
+        // Validate template metadata (if present)
+        try {
+            String validationError = attendanceExcelService.validateTemplateMetadata(file, tenantId, deviceId);
+            if (validationError != null) {
+                return ResponseEntity.badRequest().body(ImportResultDTO.builder()
+                        .batchId(null)
+                        .total(0).success(0).failed(0)
+                        .message(validationError)
+                        .duplicate(false)
+                        .build());
+            }
+        } catch (Exception e) {
+            log.warn("Error validating template metadata (non-critical): {}", e.getMessage());
+            // Continue with import - metadata validation is not blocking
+        }
+        
+        // Use device-aware import
+        ImportResultDTO result = importService.importLogsExcelWithDevice(orgId, tenantId, deviceId, file, month, year, 
+            uploadedBy == null ? "admin" : uploadedBy);
 
         // If not a duplicate, rebuild the org month
         if (!result.isDuplicate()) {
@@ -544,39 +570,17 @@ public class AttendanceImportController {
         ));
         
         // Help message
-        info.put("helpMessage", "If your biometric machine exports data in a different format, " +
-                "please contact our support team. Share your attendance logs format and we will help you.");
+        info.put("helpMessage", "Download the template for your selected biometric device. " +
+                "The template contains your employees assigned to that device. Fill in the punch times and upload.");
         info.put("supportEmail", "support@hrms.com");
         info.put("downloadUrl", "/api/attendance/template/download");
-        info.put("sampleDownloadUrl", "/api/attendance/template/sample");
+        info.put("deviceRequired", true);
+        info.put("note", "Template is dynamically generated based on your selected biometric device. " +
+                "Each device has its own template with only employees assigned to that device.");
         
         return ResponseEntity.ok(info);
     }
 
-    /**
-     * Download a SAMPLE attendance template with real example data.
-     * This is a STATIC Excel file from actual biometric machine export.
-     * Shows users the exact format they need to follow.
-     */
-    @GetMapping("/template/sample")
-    public ResponseEntity<byte[]> downloadSampleTemplate() {
-        try {
-            // Load static Excel file from resources directly - NO conversion needed
-            org.springframework.core.io.ClassPathResource resource = 
-                new org.springframework.core.io.ClassPathResource("templates/attednace_logs.xlsx");
-            
-            byte[] excelData = resource.getInputStream().readAllBytes();
-            
-            return ResponseEntity.ok()
-                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=attendance_sample_template.xlsx")
-                    .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
-                    .body(excelData);
-                    
-        } catch (Exception e) {
-            log.error("Error loading sample template", e);
-            return ResponseEntity.internalServerError().build();
-        }
-    }
     
     /**
      * Convert CSV data to Excel format.
@@ -787,35 +791,39 @@ public class AttendanceImportController {
 
     /**
      * Download the attendance import template for a specific month/year and biometric device.
-     * The template is pre-filled with employee list and has the same format as biometric exports.
-     * The deviceId/deviceCode is encoded in the filename for validation during import.
+     * The template is dynamically generated with employees assigned to the selected device.
+     * Device selection is REQUIRED - template will only contain employees for that device.
+     * The template includes embedded metadata (tenant ID and device ID) for validation during upload.
      */
     @GetMapping("/template/download")
     public ResponseEntity<byte[]> downloadAttendanceTemplate(
-            @RequestParam(value = "month", required = false) Integer month,
-            @RequestParam(value = "year", required = false) Integer year,
-            @RequestParam(value = "deviceId", required = false) Long deviceId,
-            @RequestParam(value = "deviceCode", required = false) String deviceCode) {
+            @RequestParam("month") int month,
+            @RequestParam("year") int year,
+            @RequestParam("deviceId") Long deviceId) {
         try {
             String tenantId = TenantContext.getTenantId();
             
-            // Default to current month/year if not provided
-            java.time.YearMonth ym = (month != null && year != null) 
-                ? java.time.YearMonth.of(year, month)
-                : java.time.YearMonth.now();
-            
-            byte[] template = attendanceExcelService.generateTemplate(tenantId, ym, deviceId);
-            
-            // Build filename with embedded device info (similar to employee import)
-            String filename;
-            if (deviceId != null && deviceCode != null && !deviceCode.isEmpty()) {
-                // Encode device info in filename: attendance_template_YYYY_MM_device_ID_CODE.xlsx
-                filename = String.format("attendance_template_%d_%02d_device_%d_%s.xlsx", 
-                        ym.getYear(), ym.getMonthValue(), deviceId, deviceCode.replaceAll("[^a-zA-Z0-9_-]", "_"));
-                log.info("Generating attendance template with device: {} ({})", deviceCode, deviceId);
-            } else {
-                filename = String.format("attendance_template_%d_%02d.xlsx", ym.getYear(), ym.getMonthValue());
+            // Validate device exists and belongs to tenant
+            var deviceOpt = deviceRepo.findById(deviceId);
+            if (deviceOpt.isEmpty() || !deviceOpt.get().getTenantId().equals(tenantId)) {
+                return ResponseEntity.badRequest()
+                        .body(("Device not found or does not belong to your organization").getBytes());
             }
+            
+            var device = deviceOpt.get();
+            java.time.YearMonth ym = java.time.YearMonth.of(year, month);
+            
+            // Generate template with embedded tenant/device metadata
+            byte[] template = attendanceExcelService.generateTemplateWithMetadata(
+                    tenantId, ym, deviceId, device.getDeviceCode());
+            
+            // Build filename with device info
+            String filename = String.format("attendance_template_%d_%02d_device_%d_%s.xlsx", 
+                    ym.getYear(), ym.getMonthValue(), deviceId, 
+                    device.getDeviceCode().replaceAll("[^a-zA-Z0-9_-]", "_"));
+            
+            log.info("Generated attendance template for tenant={}, device={} ({}), month={}/{}", 
+                    tenantId, device.getDeviceCode(), deviceId, month, year);
             
             return ResponseEntity.ok()
                     .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=" + filename)
