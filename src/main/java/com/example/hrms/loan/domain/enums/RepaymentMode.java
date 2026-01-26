@@ -4,5 +4,6 @@ public enum RepaymentMode {
     SALARY_DEDUCTION,
     CASH,
     BANK_TRANSFER,
-    CHEQUE
+    CHEQUE,
+    MANUAL_PAYMENT  // For manual payments recorded by admin
 }

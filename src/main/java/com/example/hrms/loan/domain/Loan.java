@@ -76,6 +76,20 @@ public class Loan {
     // Store the amount deducted (for flexible loans where we deduct outstanding balance)
     @Column(name = "deducted_amount", precision = 12, scale = 2)
     private BigDecimal deductedAmount;
+    
+    // Admin can enforce/modify loan deduction amount for specific payroll period
+    // If set, this amount will be used instead of EMI amount for that payroll
+    @Column(name = "enforced_amount", precision = 12, scale = 2)
+    private BigDecimal enforcedAmount;
+    
+    @Column(name = "enforced_for_month")
+    private Integer enforcedForMonth;
+    
+    @Column(name = "enforced_for_year")
+    private Integer enforcedForYear;
+    
+    @Column(name = "enforce_in_payroll", nullable = false)
+    private Boolean enforceInPayroll = false; // If true, admin wants to enforce this loan in payroll
 
     @Column(nullable = false)
     private LocalDate sanctionDate;
@@ -175,6 +189,19 @@ public class Loan {
     
     public BigDecimal getDeductedAmount() { return deductedAmount; }
     public void setDeductedAmount(BigDecimal deductedAmount) { this.deductedAmount = deductedAmount; }
+    
+    // Enforced amount getters/setters
+    public BigDecimal getEnforcedAmount() { return enforcedAmount; }
+    public void setEnforcedAmount(BigDecimal enforcedAmount) { this.enforcedAmount = enforcedAmount; }
+    
+    public Integer getEnforcedForMonth() { return enforcedForMonth; }
+    public void setEnforcedForMonth(Integer enforcedForMonth) { this.enforcedForMonth = enforcedForMonth; }
+    
+    public Integer getEnforcedForYear() { return enforcedForYear; }
+    public void setEnforcedForYear(Integer enforcedForYear) { this.enforcedForYear = enforcedForYear; }
+    
+    public Boolean getEnforceInPayroll() { return enforceInPayroll; }
+    public void setEnforceInPayroll(Boolean enforceInPayroll) { this.enforceInPayroll = enforceInPayroll; }
     
     /**
      * Check if this one-time/flexible loan has already been deducted in a payroll

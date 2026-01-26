@@ -155,15 +155,40 @@ public class LoanService {
     }
 
     /**
-     * Get total monthly EMI/loan deduction for an employee
+     * Get total monthly EMI/loan deduction for an employee for a specific payroll period
      * Includes:
      * - Regular EMI loans (fixed monthly deductions)
      * - Pending one-time loans (not yet deducted)
      * - Flexible loans (outstanding balance - auto-included for payroll)
+     * - Enforced amounts (admin-modified amounts for specific payroll period)
      * Excludes:
      * - One-time loans already deducted in a previous payroll
      */
     public BigDecimal getMonthlyEmiDeduction(String orgId, String empId) {
+        return getMonthlyEmiDeduction(orgId, empId, null, null);
+    }
+    
+    /**
+     * Get total monthly EMI/loan deduction for an employee for a specific payroll period
+     * If month/year provided, checks for enforced amounts
+     */
+    public BigDecimal getMonthlyEmiDeduction(String orgId, String empId, Integer month, Integer year) {
+        // Check for enforced amounts first (admin-modified amounts for this payroll period)
+        BigDecimal enforcedAmount = BigDecimal.ZERO;
+        if (month != null && year != null) {
+            List<Loan> enforcedLoans = loanRepo.findEnforcedLoansForPeriod(orgId, empId, month, year);
+            for (Loan loan : enforcedLoans) {
+                if (loan.getEnforcedAmount() != null && Boolean.TRUE.equals(loan.getEnforceInPayroll())) {
+                    enforcedAmount = enforcedAmount.add(loan.getEnforcedAmount());
+                }
+            }
+        }
+        
+        // If enforced amounts exist, use them instead of regular calculation
+        if (enforcedAmount.compareTo(BigDecimal.ZERO) > 0) {
+            return enforcedAmount;
+        }
+        
         // Regular EMI loans (excluding one-time and flexible)
         BigDecimal regularEmi = loanRepo.sumActiveEmiByEmployee(orgId, empId);
         if (regularEmi == null) regularEmi = BigDecimal.ZERO;
@@ -187,11 +212,13 @@ public class LoanService {
     }
     
     /**
-     * Mark one-time and flexible loans as deducted in a payroll
+     * Mark one-time loans as deducted in a payroll
+     * NOTE: Flexible loans are NOT processed here - they are handled by updateLoanBalancesForAdjustedAmount()
+     * when payroll is approved, so smart adjustment can work correctly (partial deduction)
      */
     @Transactional
     public void markOneTimeLoansAsDeducted(String tenantId, String empId, Long payrollId, Integer month, Integer year) {
-        // Mark one-time loans as deducted
+        // Mark one-time loans as deducted (these are always fully deducted)
         List<Loan> pendingOneTimeLoans = loanRepo.findPendingOneTimeLoans(tenantId, empId);
         for (Loan loan : pendingOneTimeLoans) {
             loan.markAsDeducted(payrollId, month, year);
@@ -207,17 +234,10 @@ public class LoanService {
             loanRepo.save(loan);
         }
         
-        // Mark flexible loans as deducted (full outstanding balance)
-        List<Loan> flexibleLoans = loanRepo.findActiveFlexibleLoans(tenantId, empId);
-        for (Loan loan : flexibleLoans) {
-            BigDecimal deductionAmount = loan.getOutstandingBalance();
-            loan.markAsDeducted(payrollId, month, year, deductionAmount); // Store amount for reversal
-            loan.setTotalPaid(loan.getTotalPaid().add(deductionAmount));
-            loan.setOutstandingBalance(BigDecimal.ZERO);
-            loan.setStatus(LoanStatus.CLOSED);
-            loan.setClosedDate(java.time.LocalDate.now());
-            loanRepo.save(loan);
-        }
+        // DO NOT process flexible loans here!
+        // Flexible loans are handled by updateLoanBalancesForAdjustedAmount() when payroll is APPROVED
+        // This allows smart adjustment to deduct only the adjusted amount (e.g., ₹1,953 instead of ₹5,000)
+        // and leave the remaining balance outstanding (e.g., ₹3,047)
     }
     
     /**
@@ -313,8 +333,17 @@ public class LoanService {
 
     /**
      * Process EMI payment (called during payroll processing)
+     * Overloaded method for backward compatibility
      */
     public LoanRepayment processEmiPayment(Long loanId, Long payrollId) {
+        return processEmiPayment(loanId, payrollId, null);
+    }
+    
+    /**
+     * Process EMI payment (called during payroll processing)
+     * @param description Optional description for the payment (e.g., "Deducted in salary of DECEMBER 2025")
+     */
+    public LoanRepayment processEmiPayment(Long loanId, Long payrollId, String description) {
         Loan loan = loanRepo.findById(loanId).orElseThrow();
         LoanRepayment nextEmi = repaymentRepo.findTopByLoanIdAndIsPaidFalseOrderByEmiNumberAsc(loanId)
                 .orElse(null);
@@ -328,6 +357,14 @@ public class LoanService {
         nextEmi.setAmountPaid(nextEmi.getEmiAmount());
         nextEmi.setRepaymentMode(RepaymentMode.SALARY_DEDUCTION);
         nextEmi.setPayrollId(payrollId);
+        
+        // Add description for payroll deduction
+        if (description != null && !description.trim().isEmpty()) {
+            nextEmi.setRemarks(description);
+        } else if (payrollId != null) {
+            nextEmi.setRemarks("Deducted in salary through payroll");
+        }
+        
         repaymentRepo.save(nextEmi);
 
         // Update loan
@@ -340,10 +377,56 @@ public class LoanService {
             loan.getOutstandingBalance().compareTo(BigDecimal.ZERO) <= 0) {
             loan.setStatus(LoanStatus.CLOSED);
             loan.setClosedDate(LocalDate.now());
+            loan.setOutstandingBalance(BigDecimal.ZERO);
         }
 
         loanRepo.save(loan);
         return nextEmi;
+    }
+    
+    /**
+     * Record payroll deduction for partial loan payment (smart adjustment)
+     * Creates a repayment record with description showing amount deducted and remaining balance
+     */
+    public LoanRepayment recordPayrollDeduction(Long loanId, BigDecimal amount, Long payrollId, 
+                                                 Integer month, Integer year, String description) {
+        Loan loan = loanRepo.findById(loanId).orElseThrow();
+        
+        // Create a repayment record for this partial deduction
+        LoanRepayment repayment = new LoanRepayment();
+        repayment.setLoanId(loanId);
+        
+        // Get next EMI number (or use current paid count + 1)
+        int nextEmiNumber = (loan.getEmisPaid() != null ? loan.getEmisPaid() : 0) + 1;
+        repayment.setEmiNumber(nextEmiNumber);
+        repayment.setDueDate(LocalDate.of(year, month, 1));
+        repayment.setPaidDate(LocalDate.now());
+        repayment.setEmiAmount(amount); // Scheduled amount
+        repayment.setAmountPaid(amount); // Actual amount paid (adjusted)
+        repayment.setBalanceAfterPayment(loan.getOutstandingBalance().subtract(amount));
+        repayment.setRepaymentMode(RepaymentMode.SALARY_DEDUCTION);
+        repayment.setPayrollId(payrollId);
+        repayment.setIsPaid(true);
+        repayment.setRemarks(description); // Description like "Deducted in salary of DECEMBER 2025 (₹2000 deducted, ₹3000 remaining)"
+        
+        repaymentRepo.save(repayment);
+        
+        // Update loan balance
+        loan.setTotalPaid(loan.getTotalPaid().add(amount));
+        loan.setOutstandingBalance(loan.getOutstandingBalance().subtract(amount));
+        
+        // Mark as deducted in this payroll
+        loan.markAsDeducted(payrollId, month, year, amount);
+        
+        // Close loan if fully paid
+        if (loan.getOutstandingBalance().compareTo(BigDecimal.ZERO) <= 0) {
+            loan.setStatus(LoanStatus.CLOSED);
+            loan.setClosedDate(LocalDate.now());
+            loan.setOutstandingBalance(BigDecimal.ZERO);
+        }
+        
+        loanRepo.save(loan);
+        return repayment;
     }
 
     /**
@@ -354,15 +437,174 @@ public class LoanService {
     }
 
     /**
-     * Update loan
+     * Update loan - comprehensive update supporting all fields
      */
     public Loan updateLoan(Long loanId, Loan updates) {
         Loan loan = loanRepo.findById(loanId).orElseThrow();
+        
+        // Update basic fields
         if (updates.getRemarks() != null) loan.setRemarks(updates.getRemarks());
-        if (updates.getStatus() != null) loan.setStatus(updates.getStatus());
+        if (updates.getStatus() != null) {
+            // Validate status - cannot be CLOSED if outstanding balance > 0
+            if (updates.getStatus() == LoanStatus.CLOSED && 
+                loan.getOutstandingBalance().compareTo(BigDecimal.ZERO) > 0) {
+                throw new IllegalStateException("Cannot close loan with outstanding balance: " + loan.getOutstandingBalance());
+            }
+            loan.setStatus(updates.getStatus());
+            if (updates.getStatus() == LoanStatus.CLOSED && loan.getClosedDate() == null) {
+                loan.setClosedDate(java.time.LocalDate.now());
+            }
+        }
+        
+        // Update loan amounts (if not already paid)
+        if (updates.getPrincipalAmount() != null && loan.getTotalPaid().compareTo(BigDecimal.ZERO) == 0) {
+            BigDecimal oldPrincipal = loan.getPrincipalAmount();
+            BigDecimal newPrincipal = updates.getPrincipalAmount();
+            BigDecimal difference = newPrincipal.subtract(oldPrincipal);
+            
+            loan.setPrincipalAmount(newPrincipal);
+            loan.setOutstandingBalance(loan.getOutstandingBalance().add(difference));
+            loan.setTotalRepayable(loan.getTotalRepayable().add(difference));
+        }
+        
+        // Update EMI amount (if not already paid)
+        if (updates.getEmiAmount() != null && loan.getEmisPaid() == 0) {
+            loan.setEmiAmount(updates.getEmiAmount());
+        }
+        
+        // Update tenure (if not already paid)
+        if (updates.getTenureMonths() != null && loan.getEmisPaid() == 0) {
+            loan.setTenureMonths(updates.getTenureMonths());
+        }
+        
+        // Update interest rate (if not already paid)
+        if (updates.getInterestRate() != null && loan.getTotalPaid().compareTo(BigDecimal.ZERO) == 0) {
+            loan.setInterestRate(updates.getInterestRate());
+            // Recalculate total repayable if principal and tenure exist
+            if (loan.getPrincipalAmount() != null && loan.getTenureMonths() != null && loan.getTenureMonths() > 0) {
+                BigDecimal newEmi = calculateEmi(loan.getPrincipalAmount(), loan.getInterestRate(), loan.getTenureMonths());
+                loan.setEmiAmount(newEmi);
+                loan.setTotalRepayable(newEmi.multiply(BigDecimal.valueOf(loan.getTenureMonths())));
+                loan.setOutstandingBalance(loan.getTotalRepayable().subtract(loan.getTotalPaid()));
+            }
+        }
+        
+        // Prevent loan type changes - loan type can only be set at creation time
+        if (updates.getLoanType() != null && !updates.getLoanType().equals(loan.getLoanType())) {
+            throw new IllegalStateException("Loan type cannot be changed after creation. Current type: " + loan.getLoanType() + 
+                    ", Attempted: " + updates.getLoanType() + ". Loan type can only be set during creation.");
+        }
+        
+        // Prevent isOneTimeDeduction and isFlexibleDeduction changes after creation
+        // These determine EMI vs flexible vs one-time, and cannot be changed once set
+        if (updates.getIsOneTimeDeduction() != null && 
+            !updates.getIsOneTimeDeduction().equals(loan.getIsOneTimeDeduction())) {
+            throw new IllegalStateException("Loan deduction type (one-time/flexible) cannot be changed after creation. " +
+                    "Current: " + loan.getIsOneTimeDeduction() + ", Attempted: " + updates.getIsOneTimeDeduction());
+        }
+        if (updates.getIsFlexibleDeduction() != null && 
+            !updates.getIsFlexibleDeduction().equals(loan.getIsFlexibleDeduction())) {
+            throw new IllegalStateException("Loan deduction type (one-time/flexible) cannot be changed after creation. " +
+                    "Current: " + loan.getIsFlexibleDeduction() + ", Attempted: " + updates.getIsFlexibleDeduction());
+        }
+        
+        // Update enforced amount fields
+        if (updates.getEnforcedAmount() != null) {
+            loan.setEnforcedAmount(updates.getEnforcedAmount());
+        }
+        if (updates.getEnforcedForMonth() != null) {
+            loan.setEnforcedForMonth(updates.getEnforcedForMonth());
+        }
+        if (updates.getEnforcedForYear() != null) {
+            loan.setEnforcedForYear(updates.getEnforcedForYear());
+        }
+        if (updates.getEnforceInPayroll() != null) {
+            loan.setEnforceInPayroll(updates.getEnforceInPayroll());
+        }
+        
+        // Ensure status matches outstanding balance
+        if (loan.getOutstandingBalance().compareTo(BigDecimal.ZERO) <= 0 && loan.getStatus() != LoanStatus.CLOSED) {
+            loan.setStatus(LoanStatus.CLOSED);
+            if (loan.getClosedDate() == null) {
+                loan.setClosedDate(java.time.LocalDate.now());
+            }
+        } else if (loan.getOutstandingBalance().compareTo(BigDecimal.ZERO) > 0 && loan.getStatus() == LoanStatus.CLOSED) {
+            loan.setStatus(LoanStatus.ACTIVE);
+            loan.setClosedDate(null);
+        }
+        
         return loanRepo.save(loan);
     }
+    
+    /**
+     * Delete loan permanently (only if no payments made)
+     */
+    @Transactional
+    public void deleteLoan(Long loanId) {
+        Loan loan = loanRepo.findById(loanId).orElseThrow();
+        
+        // Cannot delete if payments have been made
+        if (loan.getTotalPaid().compareTo(BigDecimal.ZERO) > 0) {
+            throw new IllegalStateException("Cannot delete loan with payment history. Cancel the loan instead.");
+        }
+        
+        // Delete associated repayments if any
+        List<LoanRepayment> repayments = repaymentRepo.findByLoanIdOrderByEmiNumberAsc(loanId);
+        if (!repayments.isEmpty()) {
+            repaymentRepo.deleteAll(repayments);
+        }
+        
+        // Delete the loan
+        loanRepo.delete(loan);
+    }
 
+    /**
+     * Record partial payment with description (for manual payments)
+     */
+    public LoanRepayment recordPartialPayment(Long loanId, BigDecimal amount, String description) {
+        Loan loan = loanRepo.findById(loanId).orElseThrow();
+        
+        // Validate amount
+        if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("Amount must be positive");
+        }
+        if (amount.compareTo(loan.getOutstandingBalance()) > 0) {
+            throw new IllegalArgumentException("Amount cannot exceed outstanding balance: " + loan.getOutstandingBalance());
+        }
+        
+        // Create repayment record
+        LoanRepayment repayment = new LoanRepayment();
+        repayment.setLoanId(loanId);
+        int nextEmiNumber = (loan.getEmisPaid() != null ? loan.getEmisPaid() : 0) + 1;
+        repayment.setEmiNumber(nextEmiNumber);
+        repayment.setDueDate(LocalDate.now());
+        repayment.setPaidDate(LocalDate.now());
+        repayment.setEmiAmount(amount);
+        repayment.setAmountPaid(amount);
+        repayment.setBalanceAfterPayment(loan.getOutstandingBalance().subtract(amount));
+        repayment.setRepaymentMode(RepaymentMode.MANUAL_PAYMENT);
+        repayment.setIsPaid(true);
+        repayment.setRemarks(description != null && !description.trim().isEmpty() 
+                ? description 
+                : "Manual payment recorded");
+        
+        repaymentRepo.save(repayment);
+        
+        // Update loan
+        loan.setTotalPaid(loan.getTotalPaid().add(amount));
+        loan.setOutstandingBalance(loan.getOutstandingBalance().subtract(amount));
+        
+        // Close loan if fully paid
+        if (loan.getOutstandingBalance().compareTo(BigDecimal.ZERO) <= 0) {
+            loan.setStatus(LoanStatus.CLOSED);
+            loan.setClosedDate(LocalDate.now());
+            loan.setOutstandingBalance(BigDecimal.ZERO);
+        }
+        
+        loanRepo.save(loan);
+        return repayment;
+    }
+    
     /**
      * Cancel loan
      */

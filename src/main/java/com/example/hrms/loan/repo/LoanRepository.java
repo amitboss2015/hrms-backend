@@ -64,6 +64,15 @@ public interface LoanRepository extends JpaRepository<Loan, Long> {
            "AND l.isOneTimeDeduction = true AND l.deductedInPayrollId IS NULL")
     BigDecimal sumPendingOneTimeLoans(@Param("tenantId") String tenantId, @Param("empId") String empId);
     
+    // Find loans with enforced amounts for a specific payroll period
+    @Query("SELECT l FROM Loan l WHERE l.tenantId = :tenantId AND l.empId = :empId " +
+           "AND l.enforceInPayroll = true AND l.enforcedForMonth = :month AND l.enforcedForYear = :year " +
+           "AND l.enforcedAmount IS NOT NULL")
+    List<Loan> findEnforcedLoansForPeriod(@Param("tenantId") String tenantId, 
+                                           @Param("empId") String empId,
+                                           @Param("month") Integer month, 
+                                           @Param("year") Integer year);
+    
     // ============ LEGACY METHODS (backward compatibility) ============
     
     @Deprecated

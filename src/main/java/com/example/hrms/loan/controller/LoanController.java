@@ -244,25 +244,100 @@ public class LoanController {
     }
 
     /**
-     * Update loan details (status, remarks)
+     * Update loan details - comprehensive update supporting all fields
      */
     @PutMapping("/{id}")
-    public ResponseEntity<Loan> updateLoan(@PathVariable Long id, @RequestBody Map<String, Object> updates) {
-        Optional<Loan> loanOpt = loanService.getLoan(id);
-        if (loanOpt.isEmpty()) {
-            return ResponseEntity.notFound().build();
+    public ResponseEntity<Map<String, Object>> updateLoan(@PathVariable Long id, @RequestBody Map<String, Object> updates) {
+        try {
+            Optional<Loan> loanOpt = loanService.getLoan(id);
+            if (loanOpt.isEmpty()) {
+                return ResponseEntity.notFound().build();
+            }
+            
+            Loan loan = loanOpt.get();
+            Loan updateLoan = new Loan();
+            
+            // Update status
+            if (updates.get("status") != null) {
+                updateLoan.setStatus(LoanStatus.valueOf(updates.get("status").toString().toUpperCase()));
+            }
+            
+            // Update remarks
+            if (updates.get("remarks") != null) {
+                updateLoan.setRemarks(updates.get("remarks").toString());
+            }
+            
+            // Update principal amount
+            if (updates.get("principalAmount") != null) {
+                updateLoan.setPrincipalAmount(new BigDecimal(updates.get("principalAmount").toString()));
+            }
+            
+            // Update EMI amount
+            if (updates.get("emiAmount") != null) {
+                updateLoan.setEmiAmount(new BigDecimal(updates.get("emiAmount").toString()));
+            }
+            
+            // Update tenure
+            if (updates.get("tenureMonths") != null) {
+                updateLoan.setTenureMonths(Integer.parseInt(updates.get("tenureMonths").toString()));
+            }
+            
+            // Update interest rate
+            if (updates.get("interestRate") != null) {
+                updateLoan.setInterestRate(new BigDecimal(updates.get("interestRate").toString()));
+            }
+            
+            // Update loan type flags
+            if (updates.get("isOneTimeDeduction") != null) {
+                updateLoan.setIsOneTimeDeduction(Boolean.TRUE.equals(updates.get("isOneTimeDeduction")));
+            }
+            if (updates.get("isFlexibleDeduction") != null) {
+                updateLoan.setIsFlexibleDeduction(Boolean.TRUE.equals(updates.get("isFlexibleDeduction")));
+            }
+            
+            // Update enforced amount fields
+            if (updates.get("enforcedAmount") != null) {
+                updateLoan.setEnforcedAmount(new BigDecimal(updates.get("enforcedAmount").toString()));
+            }
+            if (updates.get("enforcedForMonth") != null) {
+                updateLoan.setEnforcedForMonth(Integer.parseInt(updates.get("enforcedForMonth").toString()));
+            }
+            if (updates.get("enforcedForYear") != null) {
+                updateLoan.setEnforcedForYear(Integer.parseInt(updates.get("enforcedForYear").toString()));
+            }
+            if (updates.get("enforceInPayroll") != null) {
+                updateLoan.setEnforceInPayroll(Boolean.TRUE.equals(updates.get("enforceInPayroll")));
+            }
+            
+            Loan updated = loanService.updateLoan(id, updateLoan);
+            
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("message", "Loan updated successfully");
+            response.put("loanId", updated.getId());
+            response.put("status", updated.getStatus().name());
+            response.put("outstandingBalance", updated.getOutstandingBalance());
+            
+            return ResponseEntity.ok(response);
+        } catch (IllegalStateException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Failed to update loan: " + e.getMessage()));
         }
-        
-        Loan loan = loanOpt.get();
-        
-        if (updates.get("status") != null) {
-            loan.setStatus(LoanStatus.valueOf(updates.get("status").toString().toUpperCase()));
+    }
+    
+    /**
+     * Delete loan permanently (only if no payments made)
+     */
+    @DeleteMapping("/{id}/delete")
+    public ResponseEntity<Map<String, Object>> deleteLoan(@PathVariable Long id) {
+        try {
+            loanService.deleteLoan(id);
+            return ResponseEntity.ok(Map.of("message", "Loan deleted successfully", "loanId", id));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Failed to delete loan: " + e.getMessage()));
         }
-        if (updates.get("remarks") != null) {
-            loan.setRemarks(updates.get("remarks").toString());
-        }
-        
-        return ResponseEntity.ok(loanService.updateLoan(id, loan));
     }
 
     /**
@@ -352,33 +427,19 @@ public class LoanController {
             
             Loan loan = loanOpt.get();
             BigDecimal amount = new BigDecimal(request.get("amount").toString());
-            String remarks = (String) request.getOrDefault("remarks", "Partial payment");
+            String description = (String) request.getOrDefault("description", "");
+            String remarks = (String) request.getOrDefault("remarks", "");
             
-            // Validate amount
-            if (amount.compareTo(BigDecimal.ZERO) <= 0) {
-                return ResponseEntity.badRequest().body(Map.of("error", "Amount must be positive"));
-            }
-            if (amount.compareTo(loan.getOutstandingBalance()) > 0) {
-                return ResponseEntity.badRequest().body(Map.of("error", 
-                    "Amount cannot exceed outstanding balance: " + loan.getOutstandingBalance()));
-            }
+            // Use description if provided, otherwise use remarks, otherwise default
+            String paymentDescription = description != null && !description.trim().isEmpty() 
+                    ? description 
+                    : (remarks != null && !remarks.trim().isEmpty() ? remarks : "Manual payment recorded");
             
-            // Update loan
-            BigDecimal newPaid = loan.getTotalPaid().add(amount);
-            BigDecimal newOutstanding = loan.getOutstandingBalance().subtract(amount);
+            // Record partial payment with description
+            LoanRepayment repayment = loanService.recordPartialPayment(id, amount, paymentDescription);
             
-            loan.setTotalPaid(newPaid);
-            loan.setOutstandingBalance(newOutstanding);
-            loan.setRemarks(remarks);
-            
-            // Close loan if fully paid
-            if (newOutstanding.compareTo(BigDecimal.ZERO) <= 0) {
-                loan.setStatus(LoanStatus.CLOSED);
-                loan.setClosedDate(LocalDate.now());
-                loan.setOutstandingBalance(BigDecimal.ZERO);
-            }
-            
-            loanService.updateLoan(id, loan);
+            // Reload loan to get updated values
+            loan = loanService.getLoan(id).orElseThrow();
             
             return ResponseEntity.ok(Map.of(
                 "message", "Payment recorded successfully",
