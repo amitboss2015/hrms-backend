@@ -71,6 +71,57 @@ public class AttendanceExcelService {
     }
 
     /**
+     * Generate attendance import template with embedded metadata for validation.
+     * Metadata is stored in a hidden sheet "Metadata" containing tenant ID and device ID.
+     * 
+     * @param tenantId The tenant ID
+     * @param yearMonth The year/month for the template
+     * @param deviceId REQUIRED - only employees assigned to this device will be included
+     * @param deviceCode Device code for display
+     * @return Template bytes with embedded metadata
+     */
+    public byte[] generateTemplateWithMetadata(String tenantId, java.time.YearMonth yearMonth, 
+                                                Long deviceId, String deviceCode) throws IOException {
+        byte[] template = generateTemplate(tenantId, yearMonth, deviceId);
+        
+        // Add metadata sheet to the template
+        try (org.apache.poi.xssf.usermodel.XSSFWorkbook workbook = 
+                new org.apache.poi.xssf.usermodel.XSSFWorkbook(new java.io.ByteArrayInputStream(template))) {
+            
+            // Create metadata sheet
+            org.apache.poi.ss.usermodel.Sheet metadataSheet = workbook.createSheet("_Metadata");
+            
+            // Row 0: Tenant ID
+            org.apache.poi.ss.usermodel.Row row0 = metadataSheet.createRow(0);
+            row0.createCell(0).setCellValue("TENANT_ID");
+            row0.createCell(1).setCellValue(tenantId);
+            
+            // Row 1: Device ID
+            org.apache.poi.ss.usermodel.Row row1 = metadataSheet.createRow(1);
+            row1.createCell(0).setCellValue("DEVICE_ID");
+            row1.createCell(1).setCellValue(deviceId);
+            
+            // Row 2: Device Code
+            org.apache.poi.ss.usermodel.Row row2 = metadataSheet.createRow(2);
+            row2.createCell(0).setCellValue("DEVICE_CODE");
+            row2.createCell(1).setCellValue(deviceCode);
+            
+            // Row 3: Year/Month
+            org.apache.poi.ss.usermodel.Row row3 = metadataSheet.createRow(3);
+            row3.createCell(0).setCellValue("YEAR_MONTH");
+            row3.createCell(1).setCellValue(yearMonth.toString());
+            
+            // Hide the metadata sheet
+            workbook.setSheetHidden(workbook.getSheetIndex(metadataSheet), true);
+            
+            // Write to byte array
+            java.io.ByteArrayOutputStream outputStream = new java.io.ByteArrayOutputStream();
+            workbook.write(outputStream);
+            return outputStream.toByteArray();
+        }
+    }
+    
+    /**
      * Generate attendance import template in biometric export format (List of Logs style).
      * Format matches the biometric machine export with:
      * - Row 1: "List of Logs" title
@@ -80,7 +131,7 @@ public class AttendanceExcelService {
      * 
      * @param tenantId The tenant ID
      * @param yearMonth The year/month for the template
-     * @param deviceId Optional - if provided, only employees assigned to this device will be included
+     * @param deviceId REQUIRED - if provided, only employees assigned to this device will be included
      */
     public byte[] generateTemplate(String tenantId, java.time.YearMonth yearMonth, Long deviceId) throws IOException {
         try (XSSFWorkbook workbook = new XSSFWorkbook()) {
@@ -183,21 +234,63 @@ public class AttendanceExcelService {
             int empNum = 1;
             
             for (Employee emp : employees) {
-                String empCodeToUse = (deviceId != null && emp.getDeviceEmpCode() != null && !emp.getDeviceEmpCode().isEmpty())
+                // Determine device code to use (for import matching)
+                String deviceCodeToUse = (deviceId != null && emp.getDeviceEmpCode() != null && !emp.getDeviceEmpCode().isEmpty())
                         ? emp.getDeviceEmpCode()
                         : emp.getEmpCode();
+                
+                // Get system-generated code (unique per tenant)
+                String systemCode = emp.getEmpCode();
+                
+                // Format: "deviceCode (SYS:systemCode)" for clarity
+                // This helps identify employees when same device code exists in multiple devices
+                String displayCode;
+                if (deviceId != null && emp.getDeviceEmpCode() != null && !emp.getDeviceEmpCode().isEmpty() 
+                        && !deviceCodeToUse.equals(systemCode)) {
+                    // Different device code and system code - show both
+                    displayCode = deviceCodeToUse + " (SYS:" + systemCode + ")";
+                } else {
+                    // Same code or no device code - just show system code
+                    displayCode = systemCode;
+                }
+                
                 String empName = emp.getFirstName() + (emp.getLastName() != null ? " " + emp.getLastName() : "");
                 String dept = emp.getDepartment() != null ? emp.getDepartment() : "Unset";
 
-                // Row 1 of 3: Employee info row (No: | emp_code | Name: | name | Dept: | dept | Unset)
+                // Row 1 of 3: Employee info row (No: | device_code (SYS:system_code) | Name: | name | Dept: | dept)
                 Row infoRow = sheet.createRow(rowNum);
                 Cell noLabel = infoRow.createCell(0);
                 noLabel.setCellValue("No :");
                 noLabel.setCellStyle(blueHeaderStyle);
                 
                 Cell noValue = infoRow.createCell(1);
-                noValue.setCellValue(empCodeToUse);
+                noValue.setCellValue(displayCode);
                 noValue.setCellStyle(blueHeaderStyle);
+                
+                // Add comment to device code cell explaining the format (optional - helps users understand)
+                // Comment shows: Device Code, System Code, and note about import matching
+                try {
+                    org.apache.poi.ss.usermodel.Drawing<?> drawing = sheet.getDrawingPatriarch();
+                    if (drawing == null) {
+                        drawing = sheet.createDrawingPatriarch();
+                    }
+                    org.apache.poi.ss.usermodel.ClientAnchor anchor = workbook.getCreationHelper().createClientAnchor();
+                    anchor.setCol1(1);
+                    anchor.setCol2(4);
+                    anchor.setRow1(rowNum);
+                    anchor.setRow2(rowNum + 3);
+                    org.apache.poi.ss.usermodel.Comment comment = drawing.createCellComment(anchor);
+                    org.apache.poi.ss.usermodel.RichTextString commentText = workbook.getCreationHelper().createRichTextString(
+                        "Device Code: " + deviceCodeToUse + "\n" +
+                        "System Code: " + systemCode + "\n" +
+                        "\nNote: Import uses device code for matching.\nSystem code is for reference only.");
+                    comment.setString(commentText);
+                    comment.setAuthor("ChandraHR");
+                    noValue.setCellComment(comment);
+                } catch (Exception e) {
+                    // Comment creation is optional - if it fails, continue without comment
+                    log.debug("Could not add comment to cell (non-critical): {}", e.getMessage());
+                }
                 
                 // Skip columns 2-7, put Name label at column 8
                 Cell nameLabel = infoRow.createCell(8);
@@ -1095,6 +1188,377 @@ public class AttendanceExcelService {
         } catch (Exception e) {
             log.warn("Error parsing time cell: {}", e.getMessage());
             return null;
+        }
+    }
+    
+    /**
+     * Validate that the uploaded template matches the expected tenant and device.
+     * Checks the embedded metadata sheet if present.
+     * 
+     * @param file The uploaded Excel file
+     * @param expectedTenantId Expected tenant ID
+     * @param expectedDeviceId Expected device ID
+     * @return Error message if validation fails, null if valid
+     */
+    public String validateTemplateMetadata(MultipartFile file, String expectedTenantId, Long expectedDeviceId) {
+        try (InputStream inputStream = file.getInputStream();
+             Workbook workbook = WorkbookFactory.create(inputStream)) {
+            
+            // Try to find metadata sheet
+            Sheet metadataSheet = null;
+            for (int i = 0; i < workbook.getNumberOfSheets(); i++) {
+                String sheetName = workbook.getSheetName(i);
+                if ("_Metadata".equals(sheetName) || "Metadata".equals(sheetName)) {
+                    metadataSheet = workbook.getSheetAt(i);
+                    break;
+                }
+            }
+            
+            // If no metadata sheet, that's OK - file might be from external source
+            // But we should still validate based on device selection
+            if (metadataSheet == null) {
+                log.debug("No metadata sheet found in uploaded file - skipping metadata validation");
+                return null; // Allow import to proceed
+            }
+            
+            // Read metadata
+            String tenantId = null;
+            Long deviceId = null;
+            
+            for (int i = 0; i <= 10; i++) {
+                Row row = metadataSheet.getRow(i);
+                if (row == null) continue;
+                
+                Cell keyCell = row.getCell(0);
+                Cell valueCell = row.getCell(1);
+                if (keyCell == null || valueCell == null) continue;
+                
+                String key = getCellStringValue(keyCell).trim();
+                String value = getCellStringValue(valueCell).trim();
+                
+                if ("TENANT_ID".equals(key)) {
+                    tenantId = value;
+                } else if ("DEVICE_ID".equals(key)) {
+                    try {
+                        deviceId = Long.parseLong(value);
+                    } catch (NumberFormatException e) {
+                        log.warn("Invalid device ID in metadata: {}", value);
+                    }
+                }
+            }
+            
+            // Validate tenant ID
+            if (tenantId != null && !tenantId.equals(expectedTenantId)) {
+                return String.format(
+                    "Template validation failed: This template belongs to a different organization. " +
+                    "Please download a fresh template for your organization and device '%s'.",
+                    expectedDeviceId);
+            }
+            
+            // Validate device ID
+            if (deviceId != null && !deviceId.equals(expectedDeviceId)) {
+                return String.format(
+                    "Template validation failed: This template was generated for a different biometric device (Device ID: %d). " +
+                    "Please download a fresh template for device '%s' or select the correct device.",
+                    deviceId, expectedDeviceId);
+            }
+            
+            log.debug("Template metadata validation passed: tenant={}, device={}", tenantId, deviceId);
+            return null; // Validation passed
+            
+        } catch (Exception e) {
+            log.warn("Error reading template metadata: {}", e.getMessage());
+            // Don't block import if metadata read fails - might be external file
+            return null;
+        }
+    }
+    
+    /**
+     * Export attendance logs for a specific employee to Excel format.
+     * Includes all daily records with punches, work hours, status, OT/Late deductions, etc.
+     */
+    public byte[] exportAttendanceLogs(String tenantId, String empCode, int month, int year, 
+                                        List<com.example.hrms.attendance.dto.DailyPunchLogDTO> logs) throws IOException {
+        try (XSSFWorkbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = workbook.createSheet("Attendance Logs");
+            
+            // Styles
+            CellStyle headerStyle = workbook.createCellStyle();
+            Font headerFont = workbook.createFont();
+            headerFont.setBold(true);
+            headerFont.setFontHeightInPoints((short) 12);
+            headerFont.setColor(IndexedColors.WHITE.getIndex());
+            headerStyle.setFont(headerFont);
+            headerStyle.setFillForegroundColor(IndexedColors.DARK_BLUE.getIndex());
+            headerStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+            headerStyle.setAlignment(HorizontalAlignment.CENTER);
+            headerStyle.setVerticalAlignment(VerticalAlignment.CENTER);
+            headerStyle.setBorderBottom(BorderStyle.THIN);
+            headerStyle.setBorderTop(BorderStyle.THIN);
+            headerStyle.setBorderLeft(BorderStyle.THIN);
+            headerStyle.setBorderRight(BorderStyle.THIN);
+            
+            CellStyle dataStyle = workbook.createCellStyle();
+            dataStyle.setBorderBottom(BorderStyle.THIN);
+            dataStyle.setBorderTop(BorderStyle.THIN);
+            dataStyle.setBorderLeft(BorderStyle.THIN);
+            dataStyle.setBorderRight(BorderStyle.THIN);
+            dataStyle.setVerticalAlignment(VerticalAlignment.CENTER);
+            
+            CellStyle centerStyle = workbook.createCellStyle();
+            centerStyle.cloneStyleFrom(dataStyle);
+            centerStyle.setAlignment(HorizontalAlignment.CENTER);
+            
+            // Numeric style for OT/Late deduction columns (plain numbers, no formatting)
+            CellStyle numericStyle = workbook.createCellStyle();
+            numericStyle.cloneStyleFrom(dataStyle);
+            numericStyle.setAlignment(HorizontalAlignment.CENTER);
+            // Use general format (no special formatting like duration)
+            DataFormat dataFormat = workbook.createDataFormat();
+            numericStyle.setDataFormat(dataFormat.getFormat("0")); // Plain integer format
+            
+            // Title row
+            Row titleRow = sheet.createRow(0);
+            Cell titleCell = titleRow.createCell(0);
+            titleCell.setCellValue("Attendance Logs - " + empCode + " - " + 
+                    java.time.Month.of(month).name() + " " + year);
+            CellStyle titleStyle = workbook.createCellStyle();
+            Font titleFont = workbook.createFont();
+            titleFont.setBold(true);
+            titleFont.setFontHeightInPoints((short) 14);
+            titleStyle.setFont(titleFont);
+            titleCell.setCellStyle(titleStyle);
+            
+            // Header row
+            Row headerRow = sheet.createRow(2);
+            String[] headers = {
+                "Date", "Day", "First IN", "Last OUT", "Punches", "Work Hours", 
+                "Effective Work Hours", "Less Working Hours (in min)", "Status", "Late/Early", 
+                "OT Hours", "Late Deduction (in min)", "Early Deduction (in min)", "Shift", "All Punches", "Remarks"
+            };
+            for (int i = 0; i < headers.length; i++) {
+                Cell cell = headerRow.createCell(i);
+                cell.setCellValue(headers[i]);
+                cell.setCellStyle(headerStyle);
+            }
+            
+            // Data rows
+            int rowNum = 3;
+            int totalOtMins = 0;
+            int totalLateMins = 0;
+            int totalEarlyMins = 0; // Early checkout total
+            int totalLessWorkingMins = 0; // Late + Early total
+            int totalEffectiveWorkMins = 0; // Work - Late - Early
+            
+            for (com.example.hrms.attendance.dto.DailyPunchLogDTO log : logs) {
+                Row row = sheet.createRow(rowNum++);
+                
+                int col = 0;
+                // Date
+                row.createCell(col++).setCellValue(log.getDate());
+                // Day
+                java.time.LocalDate date = java.time.LocalDate.parse(log.getDate());
+                row.createCell(col++).setCellValue(date.getDayOfWeek().toString().substring(0, 3));
+                // First IN
+                row.createCell(col++).setCellValue(log.getFirstIn() != null ? log.getFirstIn() : "-");
+                // Last OUT
+                row.createCell(col++).setCellValue(log.getLastOut() != null ? log.getLastOut() : "-");
+                // Punches
+                row.createCell(col++).setCellValue(log.getPunchCount());
+                // Work Hours (actual OUT - IN)
+                int workMins = log.getWorkMinutes();
+                String workHours = formatDuration(workMins);
+                row.createCell(col++).setCellValue(workHours);
+                
+                // Calculate Less Working Hours (Late + Early) - only if not approved
+                int lessWorkingMins = 0;
+                if (!Boolean.TRUE.equals(log.isLateApproved()) && log.getLateByMins() > 0) {
+                    lessWorkingMins += log.getLateByMins();
+                }
+                if (!Boolean.TRUE.equals(log.isEarlyOutApproved()) && log.getEarlyByMins() > 0) {
+                    lessWorkingMins += log.getEarlyByMins();
+                }
+                totalLessWorkingMins += lessWorkingMins;
+                
+                // Effective Work Hours = Work Hours - Less Working Hours
+                int effectiveWorkMins = workMins - lessWorkingMins;
+                if (effectiveWorkMins < 0) effectiveWorkMins = 0; // Don't go negative
+                totalEffectiveWorkMins += effectiveWorkMins;
+                
+                Cell effectiveWorkCell = row.createCell(col++);
+                if (effectiveWorkMins > 0) {
+                    effectiveWorkCell.setCellValue(effectiveWorkMins); // Store as number (minutes)
+                    effectiveWorkCell.setCellStyle(numericStyle);
+                } else {
+                    effectiveWorkCell.setCellValue("-");
+                }
+                
+                // Less Working Hours (in min) - store as number
+                Cell lessWorkingCell = row.createCell(col++);
+                if (lessWorkingMins > 0) {
+                    lessWorkingCell.setCellValue(lessWorkingMins); // Store as number
+                    lessWorkingCell.setCellStyle(numericStyle);
+                } else {
+                    lessWorkingCell.setCellValue("-");
+                }
+                
+                // Status
+                row.createCell(col++).setCellValue(log.getStatus() != null ? log.getStatus() : "-");
+                // Late/Early
+                String lateEarly = "";
+                if (log.getLateByMins() > 0) {
+                    lateEarly += "Late +" + formatDuration(log.getLateByMins());
+                }
+                if (log.getEarlyByMins() > 0) {
+                    if (!lateEarly.isEmpty()) lateEarly += " / ";
+                    lateEarly += "Early +" + formatDuration(log.getEarlyByMins());
+                }
+                if (lateEarly.isEmpty()) lateEarly = "-";
+                row.createCell(col++).setCellValue(lateEarly);
+                
+                // OT Hours - convert OT deduction minutes to hours (positive OT earned)
+                int otMins = log.getOtDeductionMins();
+                totalOtMins += otMins;
+                Cell otCell = row.createCell(col++);
+                if (otMins > 0) {
+                    // Store OT hours as decimal (e.g., 60 mins = 1.0 hours)
+                    double otHours = otMins / 60.0;
+                    otCell.setCellValue(otHours);
+                    otCell.setCellStyle(numericStyle);
+                } else {
+                    otCell.setCellValue("-");
+                }
+                
+                // Late Deduction - store as number (minutes)
+                int lateMins = log.getLateDeductionMins();
+                totalLateMins += lateMins;
+                Cell lateCell = row.createCell(col++);
+                if (lateMins > 0) {
+                    lateCell.setCellValue(lateMins); // Store as number
+                    lateCell.setCellStyle(numericStyle); // Apply numeric format
+                } else {
+                    lateCell.setCellValue("-");
+                }
+                
+                // Early Deduction - store as number (minutes) - only if not approved
+                int earlyMins = 0;
+                if (!Boolean.TRUE.equals(log.isEarlyOutApproved()) && log.getEarlyByMins() > 0) {
+                    earlyMins = log.getEarlyByMins();
+                }
+                totalEarlyMins += earlyMins;
+                Cell earlyCell = row.createCell(col++);
+                if (earlyMins > 0) {
+                    earlyCell.setCellValue(earlyMins); // Store as number
+                    earlyCell.setCellStyle(numericStyle); // Apply numeric format
+                } else {
+                    earlyCell.setCellValue("-");
+                }
+                
+                // Shift
+                row.createCell(col++).setCellValue(log.getShiftCode() != null ? log.getShiftCode() : "-");
+                // All Punches
+                String allPunches = log.getPunches() != null && !log.getPunches().isEmpty() 
+                    ? String.join(", ", log.getPunches()) : "-";
+                row.createCell(col++).setCellValue(allPunches);
+                // Remarks
+                row.createCell(col++).setCellValue(log.getRemarks() != null ? log.getRemarks() : "-");
+                
+                // Apply styles
+                for (int i = 0; i < headers.length; i++) {
+                    Cell cell = row.getCell(i);
+                    if (cell != null) {
+                        // Apply styles based on column type
+                        if (i == 5) { // Work Hours column - text format
+                            cell.setCellStyle(centerStyle);
+                        } else if (i == 6 || i == 7 || i == 10 || i == 11 || i == 12) { // Numeric columns (Effective Work Hours, Less Working Hours, OT Hours, Late Deduction, Early Deduction)
+                            if (cell.getCellType() == org.apache.poi.ss.usermodel.CellType.NUMERIC) {
+                                cell.setCellStyle(numericStyle);
+                            } else {
+                                cell.setCellStyle(centerStyle);
+                            }
+                        } else if (i >= 2 && i <= 4 || i == 8) { // Times, punches, status - center align
+                            cell.setCellStyle(centerStyle);
+                        } else {
+                            cell.setCellStyle(dataStyle);
+                        }
+                    }
+                }
+            }
+            
+            // Summary row with Excel formulas
+            // rowNum currently points to the next row after last data row
+            // Data rows are from row 3 (0-indexed) to rowNum-1 (0-indexed)
+            // In Excel (1-indexed): rows 4 to rowNum
+            int firstDataRowExcel = 4; // Row 3 (0-indexed) + 1 = Excel row 4
+            int lastDataRowExcel = rowNum; // rowNum-1 (0-indexed) + 1 = Excel row rowNum
+            
+            Row summaryRow = sheet.createRow(rowNum);
+            summaryRow.createCell(0).setCellValue("TOTALS:");
+            
+            // Effective Work Hours total (Column G = column 6, 0-indexed, Excel column G)
+            Cell effectiveWorkTotalCell = summaryRow.createCell(6);
+            String effectiveWorkFormula = String.format("SUM(G%d:G%d)", firstDataRowExcel, lastDataRowExcel);
+            effectiveWorkTotalCell.setCellFormula(effectiveWorkFormula);
+            
+            // Less Working Hours total (Column H = column 7, 0-indexed, Excel column H)
+            Cell lessWorkingTotalCell = summaryRow.createCell(7);
+            String lessWorkingFormula = String.format("SUM(H%d:H%d)", firstDataRowExcel, lastDataRowExcel);
+            lessWorkingTotalCell.setCellFormula(lessWorkingFormula);
+            
+            // OT Hours total (Column K = column 10, 0-indexed, Excel column K) - sum of OT hours
+            Cell otTotalCell = summaryRow.createCell(10);
+            String otFormula = String.format("SUM(K%d:K%d)", firstDataRowExcel, lastDataRowExcel);
+            otTotalCell.setCellFormula(otFormula);
+            
+            // Late Deduction total (Column L = column 11, 0-indexed, Excel column L)
+            Cell lateTotalCell = summaryRow.createCell(11);
+            String lateFormula = String.format("SUM(L%d:L%d)", firstDataRowExcel, lastDataRowExcel);
+            lateTotalCell.setCellFormula(lateFormula);
+            
+            // Early Deduction total (Column M = column 12, 0-indexed, Excel column M)
+            Cell earlyTotalCell = summaryRow.createCell(12);
+            String earlyFormula = String.format("SUM(M%d:M%d)", firstDataRowExcel, lastDataRowExcel);
+            earlyTotalCell.setCellFormula(earlyFormula);
+            
+            CellStyle summaryStyle = workbook.createCellStyle();
+            Font summaryFont = workbook.createFont();
+            summaryFont.setBold(true);
+            summaryStyle.setFont(summaryFont);
+            summaryStyle.setFillForegroundColor(IndexedColors.LIGHT_YELLOW.getIndex());
+            summaryStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+            summaryStyle.setDataFormat(dataFormat.getFormat("0")); // Numeric format for totals
+            summaryRow.getCell(0).setCellStyle(summaryStyle);
+            effectiveWorkTotalCell.setCellStyle(summaryStyle);
+            lessWorkingTotalCell.setCellStyle(summaryStyle);
+            otTotalCell.setCellStyle(summaryStyle);
+            lateTotalCell.setCellStyle(summaryStyle);
+            earlyTotalCell.setCellStyle(summaryStyle);
+            
+            // Auto-size columns
+            for (int i = 0; i < headers.length; i++) {
+                sheet.autoSizeColumn(i);
+            }
+            
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            workbook.write(out);
+            return out.toByteArray();
+        }
+    }
+    
+    /**
+     * Format minutes to "Xh Ym" format.
+     */
+    private String formatDuration(int minutes) {
+        if (minutes == 0) return "0m";
+        int absMins = Math.abs(minutes);
+        int hours = absMins / 60;
+        int mins = absMins % 60;
+        if (hours > 0 && mins > 0) {
+            return hours + "h " + mins + "m";
+        } else if (hours > 0) {
+            return hours + "h";
+        } else {
+            return mins + "m";
         }
     }
 }
