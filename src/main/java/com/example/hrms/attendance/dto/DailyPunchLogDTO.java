@@ -56,4 +56,9 @@ public class DailyPunchLogDTO {
     private String approvedBy;         // Who approved the late/early
     private String approvedAt;         // When approval was granted (datetime string)
     private String approvalRemarks;    // Reason for approval
+    
+    // OT/Late/Early deduction fields (calculated according to salary/OT rules)
+    private int otDeductionMins;       // OT deduction in minutes (positive = OT earned, negative = OT deduction)
+    private int lateDeductionMins;     // Late deduction in minutes (0 if approved)
+    private int earlyDeductionMins;   // Early checkout deduction in minutes (0 if approved, respects grace period)
 }

@@ -22,6 +22,8 @@ public class MonthlySummaryDTO {
     private int absent;
     private int leaveDays;
     private int leave; // Alias for leaveDays (backward compatibility)
+    private int paidLeaveDays;    // Paid leave days (counts as present)
+    private int unpaidLeaveDays;   // Unpaid leave days (counts as absent)
     private int halfDays;
     private int weeklyOff;
     private int holidays;
