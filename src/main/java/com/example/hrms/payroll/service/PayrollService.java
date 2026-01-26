@@ -5,6 +5,9 @@ import com.example.hrms.attendance.repo.AttendanceDayRepository;
 import com.example.hrms.domain.Employee;
 import com.example.hrms.domain.Holiday;
 import com.example.hrms.domain.WeeklyOffConfig;
+import com.example.hrms.leave.domain.EmployeeLeave;
+import com.example.hrms.leave.domain.enums.LeaveStatus;
+import com.example.hrms.leave.repo.EmployeeLeaveRepository;
 import com.example.hrms.loan.service.LoanService;
 import com.example.hrms.payroll.domain.Payroll;
 import com.example.hrms.payroll.domain.SalaryOvertimeConfig;
@@ -50,6 +53,7 @@ public class PayrollService {
     private final PayrollRepository payrollRepo;
     private final EmployeeRepository employeeRepo;
     private final AttendanceDayRepository attendanceDayRepo;
+    private final EmployeeLeaveRepository leaveRepo;
     private final ConfigCacheService configCacheService;
     private final LoanService loanService;
     private final SalaryOvertimeConfigService configService;
@@ -61,12 +65,14 @@ public class PayrollService {
     public PayrollService(PayrollRepository payrollRepo,
                           EmployeeRepository employeeRepo,
                           AttendanceDayRepository attendanceDayRepo,
+                          EmployeeLeaveRepository leaveRepo,
                           ConfigCacheService configCacheService,
                           LoanService loanService,
                           SalaryOvertimeConfigService configService) {
         this.payrollRepo = payrollRepo;
         this.employeeRepo = employeeRepo;
         this.attendanceDayRepo = attendanceDayRepo;
+        this.leaveRepo = leaveRepo;
         this.configCacheService = configCacheService;
         this.loanService = loanService;
         this.configService = configService;
@@ -106,20 +112,16 @@ public class PayrollService {
         // Step 4: Calculate deductions (ESI, PF, Advance, Loan)
         calculateDeductions(payroll, emp);
 
-        // Step 5: Calculate totals
+        // Step 5: Calculate totals (includes smart loan adjustment)
         payroll.calculateTotals();
         payroll.setProcessedDate(LocalDate.now());
 
         Payroll savedPayroll = payrollRepo.save(payroll);
         
-        // Step 6: Mark one-time loans as deducted in this payroll
-        // This prevents them from being deducted again if payroll is regenerated
-        loanService.markOneTimeLoansAsDeducted(
-                savedPayroll.getOrgId(), 
-                savedPayroll.getEmpId(), 
-                savedPayroll.getId(), 
-                month, 
-                year);
+        // NOTE: Do NOT mark loans as deducted here during generation!
+        // Loan deduction happens only when payroll is APPROVED (in approvePayroll method)
+        // This allows smart adjustment to work correctly - only adjusted amount is deducted,
+        // remaining balance stays outstanding for flexible loans
         
         return savedPayroll;
     }
@@ -172,9 +174,10 @@ public class PayrollService {
         int weeklyOffCount = 0;
         int holidayCount = 0;
         int lateDays = 0;
-        int overtimeDays = 0;
-        int paidLeaveDays = 0;  // Count paid leave days
+        int earlyOutDays = 0;  // Days with early checkout
+        int overtimeDays = 0;  // Will be recalculated below (excess present + converted absent)
         int totalLateMinutes = 0;  // Total late minutes for late hour charges
+        int totalEarlyMinutes = 0;  // Total early checkout minutes
         BigDecimal totalOvertimeHours = BigDecimal.ZERO;
         
         // Check if employee is eligible for OT
@@ -229,11 +232,28 @@ public class PayrollService {
                             totalLateMinutes += ad.getLateByMins();
                         }
                         
+                        // Check for early checkout - skip if already approved by admin
+                        if (ad.getEarlyByMins() != null && ad.getEarlyByMins() > 0 
+                                && !Boolean.TRUE.equals(ad.getEarlyOutApproved())) {
+                            earlyOutDays++;
+                            totalEarlyMinutes += ad.getEarlyByMins();
+                        }
+                        
                         // Check for OT on working day (only if employee is OT allowed)
+                        // Use effective work hours: work hours - late - early (if not approved)
                         if (canCountOt && ad.getTotalWorkMin() != null) {
+                            int workMins = ad.getTotalWorkMin();
+                            // Deduct late and early minutes to get effective work hours
+                            int lateMins = (ad.getLateByMins() != null && !Boolean.TRUE.equals(ad.getLateApproved())) 
+                                    ? ad.getLateByMins() : 0;
+                            int earlyMins = (ad.getEarlyByMins() != null && !Boolean.TRUE.equals(ad.getEarlyOutApproved())) 
+                                    ? ad.getEarlyByMins() : 0;
+                            int effectiveWorkMins = workMins - lateMins - earlyMins;
+                            if (effectiveWorkMins < 0) effectiveWorkMins = 0;
+                            
                             int standardMins = otConfig.getStandardWorkingHoursPerDay() * 60;
                             int otMinThreshold = otConfig.getOvertimeMinThresholdMins();
-                            int extraMins = ad.getTotalWorkMin() - standardMins;
+                            int extraMins = effectiveWorkMins - standardMins;
                             
                             // Only count as OT if extra minutes exceed the minimum threshold
                             // e.g., if threshold is 30 mins, working 29 mins extra = no OT
@@ -246,12 +266,110 @@ public class PayrollService {
                     } else if ("PARTIAL".equals(status) || "HALF_DAY".equals(status)) {
                         halfDays++;
                     } else if ("LEAVE".equals(status)) {
-                        // Paid leave - counts as a working day for salary calculation
-                        paidLeaveDays++;
+                        // Leave status from attendance - will be handled below by querying EmployeeLeave records
+                        // Don't count as absent here, will be processed based on paid/unpaid status
                     } else {
                         absentDays++;
                     }
                 } else {
+                    // No attendance record - will be handled below by checking leave records
+                    // If not on leave, will be counted as absent
+                }
+            }
+            date = date.plusDays(1);
+        }
+
+        // Query APPROVED leave records for this employee in this month to calculate paid/unpaid leave days
+        String tenantId = TenantContext.getTenantId() != null ? TenantContext.getTenantId() : payroll.getOrgId();
+        List<EmployeeLeave> approvedLeaves = leaveRepo.findByTenantIdAndEmpIdAndStartDateLessThanEqualAndEndDateGreaterThanEqual(
+                tenantId, emp.getEmpCode(), endDate, startDate);
+        
+        log.info("Employee {}: Found {} leave records for {} {}", emp.getEmpCode(), approvedLeaves.size(), year, month);
+        
+        // Filter only APPROVED leaves and calculate paid vs unpaid
+        Map<LocalDate, EmployeeLeave> leaveMap = new HashMap<>();
+        for (EmployeeLeave leave : approvedLeaves) {
+            log.debug("Employee {}: Leave {} - Status: {}, Payable: {}, LeaveType: {}, IsPaid: {}", 
+                    emp.getEmpCode(), leave.getId(), leave.getStatus(), leave.getPayable(), 
+                    leave.getLeaveType() != null ? leave.getLeaveType().getName() : "null",
+                    leave.getLeaveType() != null ? leave.getLeaveType().getIsPaid() : "null");
+            
+            if (leave.getStatus() == LeaveStatus.APPROVED) {
+                LocalDate leaveDate = leave.getStartDate();
+                while (!leaveDate.isAfter(leave.getEndDate()) && !leaveDate.isAfter(endDate)) {
+                    if (!leaveDate.isBefore(startDate)) {
+                        // Only count working days (exclude weekly offs and holidays)
+                        boolean isWeeklyOff = weeklyOffDays.contains(leaveDate.getDayOfWeek());
+                        boolean isHoliday = holidayDates.contains(leaveDate);
+                        if (!isWeeklyOff && !isHoliday) {
+                            leaveMap.put(leaveDate, leave);
+                            log.debug("Employee {}: Added leave date {} to leaveMap", emp.getEmpCode(), leaveDate);
+                        } else {
+                            log.debug("Employee {}: Excluded leave date {} (weeklyOff: {}, holiday: {})", 
+                                    emp.getEmpCode(), leaveDate, isWeeklyOff, isHoliday);
+                        }
+                    }
+                    leaveDate = leaveDate.plusDays(1);
+                }
+            } else {
+                log.debug("Employee {}: Leave {} not APPROVED (status: {})", emp.getEmpCode(), leave.getId(), leave.getStatus());
+            }
+        }
+        
+        log.info("Employee {}: leaveMap size: {} (working days only)", emp.getEmpCode(), leaveMap.size());
+        
+        // Process leave days: paid leaves count as present, unpaid leaves count as absent
+        int paidLeaveDaysCount = 0;
+        int unpaidLeaveDaysCount = 0;
+        for (Map.Entry<LocalDate, EmployeeLeave> entry : leaveMap.entrySet()) {
+            LocalDate leaveDate = entry.getKey();
+            EmployeeLeave leave = entry.getValue();
+            
+            // Check if leave type is paid - paid leave types always count as paid leave
+            // The payable flag is used for balance tracking, but if leave type is paid, it should always be counted as paid
+            boolean isPaidLeave = leave.getLeaveType() != null && 
+                                  Boolean.TRUE.equals(leave.getLeaveType().getIsPaid());
+            
+            log.debug("Employee {}: Date {} - isPaidLeave: {} (leaveType.isPaid: {})", 
+                    emp.getEmpCode(), leaveDate, isPaidLeave,
+                    leave.getLeaveType() != null ? leave.getLeaveType().getIsPaid() : null);
+            
+            // Check if this date was already counted (has attendance record with PRESENT status)
+            AttendanceDay ad = attendanceMap.get(leaveDate);
+            boolean alreadyCountedAsPresent = ad != null && "PRESENT".equals(ad.getStatus());
+            
+            if (isPaidLeave) {
+                paidLeaveDaysCount++;
+                log.debug("Employee {}: Incremented paidLeaveDaysCount to {}", emp.getEmpCode(), paidLeaveDaysCount);
+                // Paid leave counts as present day (if not already counted as present)
+                if (!alreadyCountedAsPresent) {
+                    presentDays++;
+                }
+            } else {
+                unpaidLeaveDaysCount++;
+                log.debug("Employee {}: Incremented unpaidLeaveDaysCount to {} (not paid leave)", 
+                        emp.getEmpCode(), unpaidLeaveDaysCount);
+                // Unpaid leave counts as absent day (if not already counted as absent)
+                // If attendance record shows "LEAVE" status, it wasn't counted as absent, so add to absent
+                if (ad == null || "LEAVE".equals(ad.getStatus())) {
+                    absentDays++;
+                }
+            }
+        }
+        
+        log.info("Employee {}: Final paidLeaveDaysCount: {}, unpaidLeaveDaysCount: {}", 
+                emp.getEmpCode(), paidLeaveDaysCount, unpaidLeaveDaysCount);
+        
+        // Handle days with no attendance record that are not on approved leave - count as absent
+        date = startDate;
+        while (!date.isAfter(endDate)) {
+            boolean isWeeklyOff = weeklyOffDays.contains(date.getDayOfWeek());
+            boolean isHoliday = holidayDates.contains(date);
+            
+            if (!isWeeklyOff && !isHoliday) {
+                AttendanceDay ad = attendanceMap.get(date);
+                // If no attendance record and not on approved leave, count as absent
+                if (ad == null && !leaveMap.containsKey(date)) {
                     absentDays++;
                 }
             }
@@ -262,6 +380,42 @@ public class PayrollService {
         SalaryOvertimeConfig config = configService.getConfig();
         int lateToAbsentCount = config.getLateArrivalsPerAbsent();
         int lateDeductionDays = lateToAbsentCount > 0 ? lateDays / lateToAbsentCount : 0;
+        
+        // Calculate OT days from excess present days (if present days > threshold)
+        // Logic: 
+        // - Present days = 29, Absent days = 2, Paid leave = 1
+        // - Paid leave converts 1 absent day to present (line 346: presentDays++)
+        //   - After conversion: presentDays = 29 + 1 = 30
+        //   - Absent = 2 - 1 = 1 day
+        // - Excess present = 30 - 28 = 2 OT days
+        // - Total days for salary = 28 threshold + 2 OT = 30 days
+        // 
+        // IMPORTANT: Paid leave is ALREADY added to presentDays (line 346),
+        // so effectivePresentDays should NOT add paidLeaveDaysCount again to avoid double-counting.
+        
+        // Effective present days = presentDays (already includes paid leave conversion) + halfDays
+        int effectivePresentDays = presentDays + halfDays;
+        int fullMonthThreshold = config.getFullMonthSalaryThresholdDays();
+        boolean thresholdEnabled = config.getEnableFullMonthSalaryThreshold();
+        
+        // Reset OT days to 0 before recalculation
+        overtimeDays = 0;
+        
+        // Calculate OT days from excess present days (if present > threshold)
+        // This already includes paid leave converting absent days, so no need to add separately
+        if (thresholdEnabled && effectivePresentDays > fullMonthThreshold) {
+            overtimeDays = effectivePresentDays - fullMonthThreshold;
+            log.info("Employee {} has {} excess present days counted as OT days ({} effective present > {} threshold)", 
+                    emp.getEmpCode(), overtimeDays, effectivePresentDays, fullMonthThreshold);
+            log.debug("Employee {} breakdown: {} present + {} half + {} paid leave = {} effective present", 
+                    emp.getEmpCode(), presentDays, halfDays, paidLeaveDaysCount, effectivePresentDays);
+        } else {
+            log.debug("Employee {} has {} effective present days (threshold: {}), no OT days", 
+                    emp.getEmpCode(), effectivePresentDays, fullMonthThreshold);
+        }
+        
+        log.info("Employee {} total OT days: {} (effective present: {}, threshold: {})", 
+                emp.getEmpCode(), overtimeDays, effectivePresentDays, fullMonthThreshold);
 
         payroll.setTotalWorkingDays(totalWorkingDays);
         payroll.setPresentDays(presentDays);
@@ -271,15 +425,21 @@ public class PayrollService {
         payroll.setHolidayDays(holidayCount);
         payroll.setLateDays(lateDays);
         payroll.setLateDeductionDays(lateDeductionDays);
+        payroll.setEarlyOutDays(earlyOutDays);
         payroll.setOvertimeDays(overtimeDays);
         payroll.setOvertimeHours(totalOvertimeHours);
-        payroll.setPaidLeaveDays(paidLeaveDays);
-        payroll.setUnpaidLeaveDays(0);
+        payroll.setPaidLeaveDays(paidLeaveDaysCount);
+        payroll.setUnpaidLeaveDays(unpaidLeaveDaysCount);
         
         // Set total late hours (convert minutes to hours with 2 decimal places)
         BigDecimal totalLateHours = BigDecimal.valueOf(totalLateMinutes)
                 .divide(BigDecimal.valueOf(60), 2, RoundingMode.HALF_UP);
         payroll.setTotalLateHours(totalLateHours);
+        
+        // Set total early checkout hours (convert minutes to hours with 2 decimal places)
+        BigDecimal totalEarlyHours = BigDecimal.valueOf(totalEarlyMinutes)
+                .divide(BigDecimal.valueOf(60), 2, RoundingMode.HALF_UP);
+        payroll.setTotalEarlyHours(totalEarlyHours);
     }
 
     /**
@@ -313,15 +473,37 @@ public class PayrollService {
         // Late hours are tracked separately and deducted as "Late Hour Charges"
         int effectivePresentDays = presentDays + halfDays + paidLeaveDays;
         
+        // Get OT days (includes excess present days + paid leave converting absent days)
+        int totalOtDays = payroll.getOvertimeDays() != null ? payroll.getOvertimeDays() : 0;
+        
+        // Total days for salary calculation = threshold + OT days
+        // Example: 28 threshold + 2 OT = 30 days total
+        // This ensures paid leave converting absent days is properly accounted for in salary
+        int totalDaysForSalary = fullMonthThreshold + totalOtDays;
+        
         // WORKING DAY AMOUNT calculation based on Excel formula:
-        // If employee worked >= threshold days, they get FULL salary
+        // If employee worked >= threshold days, calculate salary for threshold + OT days
         // Otherwise: Working Day Amount = Final Payment * Present Days / Threshold Days
         BigDecimal workingDayAmount;
         if (thresholdEnabled && effectivePresentDays >= fullMonthThreshold) {
             // Employee qualifies for full month salary
-            workingDayAmount = finalPayment;
-            log.debug("Employee {} qualified for full salary: {} >= {} threshold days", 
-                    payroll.getEmpName(), effectivePresentDays, fullMonthThreshold);
+            // But if there are OT days (from excess present or paid leave converting absent),
+            // salary should be calculated for threshold + OT days
+            if (totalOtDays > 0) {
+                // Salary for threshold + OT days = Final Payment * (threshold + OT) / threshold
+                // Example: 2240 * (28 + 2) / 28 = 2240 * 30 / 28 = 2400
+                workingDayAmount = finalPayment
+                        .multiply(BigDecimal.valueOf(totalDaysForSalary))
+                        .divide(BigDecimal.valueOf(fullMonthThreshold), 0, RoundingMode.HALF_UP);
+                log.debug("Employee {} qualified for full salary with OT: {} * {} / {} = {} (threshold {} + OT {} = {} total days)", 
+                        payroll.getEmpName(), finalPayment, totalDaysForSalary, fullMonthThreshold, 
+                        workingDayAmount, fullMonthThreshold, totalOtDays, totalDaysForSalary);
+            } else {
+                // No OT days, just full salary
+                workingDayAmount = finalPayment;
+                log.debug("Employee {} qualified for full salary: {} >= {} threshold days", 
+                        payroll.getEmpName(), effectivePresentDays, fullMonthThreshold);
+            }
         } else {
             // Pay based on actual days worked
             // Formula: Final Payment * Effective Present Days / Threshold Days
@@ -333,13 +515,25 @@ public class PayrollService {
         }
         payroll.setWorkingDayAmount(workingDayAmount);
         
+        // Update totalWorkingDays to show threshold days (for W.DAY column display)
+        // This matches the configuration threshold used for salary calculation
+        payroll.setTotalWorkingDays(fullMonthThreshold);
+        
         // Per day rate = FINAL PAYMENT / THRESHOLD DAYS (for OT calculation)
         BigDecimal perDayRate = finalPayment.divide(BigDecimal.valueOf(fullMonthThreshold), 4, RoundingMode.HALF_UP);
         
         // Per hour rate = Per day rate / STANDARD HOURS (for OT hours calculation)
         BigDecimal perHourRate = perDayRate.divide(BigDecimal.valueOf(standardHoursPerDay), 4, RoundingMode.HALF_UP);
+        
+        // Calculate early checkout charges (similar to late hour charges)
+        BigDecimal totalEarlyHours = payroll.getTotalEarlyHours() != null ? payroll.getTotalEarlyHours() : BigDecimal.ZERO;
+        BigDecimal earlyHourCharges = perHourRate
+                .multiply(totalEarlyHours)
+                .setScale(0, RoundingMode.HALF_UP);
+        payroll.setEarlyHourCharges(earlyHourCharges);
 
         // OT DAY AMOUNT = Per day rate * OT days * Multiplier (for full day OT on holidays/weekends)
+        // OT days include: holidays/weekends worked + excess present days (if present > threshold)
         int otDays = payroll.getOvertimeDays() != null ? payroll.getOvertimeDays() : 0;
         BigDecimal weekendMultiplier = config.getWeekendOvertimeMultiplier();
         BigDecimal otDayAmount = perDayRate
@@ -347,6 +541,9 @@ public class PayrollService {
                 .multiply(weekendMultiplier) // Apply OT multiplier
                 .setScale(0, RoundingMode.HALF_UP);
         payroll.setOvertimeDayAmount(otDayAmount);
+        log.info("Employee {} OT days: {}, OT day amount: ₹{} (per day rate: ₹{}, multiplier: {}). Present days: {}, Threshold: {}", 
+                payroll.getEmpId(), otDays, otDayAmount, perDayRate, weekendMultiplier, 
+                payroll.getPresentDays(), fullMonthThreshold);
 
         // OT HR AMOUNT = Per hour rate * OT hours * Multiplier (for extra hours on working days)
         BigDecimal otHours = payroll.getOvertimeHours() != null ? payroll.getOvertimeHours() : BigDecimal.ZERO;
@@ -357,6 +554,16 @@ public class PayrollService {
                 .setScale(0, RoundingMode.HALF_UP);
         payroll.setOvertimeHourAmount(otHourAmount);
 
+        // PAID LEAVE CHARGES = Per day rate * Paid leave days
+        // Paid leave charges are added to gross salary (employee gets paid for leave days)
+        int paidLeaveDaysCount = payroll.getPaidLeaveDays() != null ? payroll.getPaidLeaveDays() : 0;
+        BigDecimal paidLeaveCharges = perDayRate
+                .multiply(BigDecimal.valueOf(paidLeaveDaysCount))
+                .setScale(0, RoundingMode.HALF_UP);
+        payroll.setPaidLeaveCharges(paidLeaveCharges);
+        log.info("Employee {} paid leave charges: {} days * {} per day rate = ₹{}", 
+                payroll.getEmpName(), paidLeaveDaysCount, perDayRate, paidLeaveCharges);
+        
         // LATE HOUR CHARGES = Per hour rate * Total late hours
         // This is deducted from salary (late hours are counted and charged at hourly rate)
         BigDecimal totalLateHours = payroll.getTotalLateHours() != null ? payroll.getTotalLateHours() : BigDecimal.ZERO;
@@ -407,18 +614,38 @@ public class PayrollService {
                 .add(safeAdd(payroll.getSpecialAllowance()))
                 .add(safeAdd(payroll.getOtherAllowance()));
 
-        // ESI = WORKING DAY AMOUNT * esi_employee_rate (org-configurable)
-        // Calculated on prorated salary (Working Day Amount), matching Excel calculation
-        // Only applies if employee is ESI applicable AND working day amount <= ESI wage ceiling
+        // ESI = GROSS SALARY * esi_employee_rate (org-configurable)
+        // ESI is calculated on GROSS SALARY (Working Day Amount + OT + Allowances), not just Working Day Amount
+        // Only applies if employee is ESI applicable AND gross salary <= ESI wage ceiling
         boolean esicApplicable = emp.getEsicApplicable() == null || Boolean.TRUE.equals(emp.getEsicApplicable());
-        BigDecimal workingDayAmount = safeAdd(payroll.getWorkingDayAmount());
-        boolean withinEsiCeiling = workingDayAmount.compareTo(esiWageCeiling) <= 0;
+        // Calculate gross salary for ESI check (includes OT and allowances)
+        BigDecimal grossForEsi = safeAdd(payroll.getWorkingDayAmount())
+                .add(safeAdd(payroll.getOvertimeDayAmount()))
+                .add(safeAdd(payroll.getOvertimeHourAmount()))
+                .add(safeAdd(payroll.getHouseRent()))
+                .add(safeAdd(payroll.getMedicalExpense()))
+                .add(safeAdd(payroll.getConveyanceAllowance()))
+                .add(safeAdd(payroll.getSpecialAllowance()))
+                .add(safeAdd(payroll.getOtherAllowance()))
+                .add(safeAdd(payroll.getBonus()))
+                .add(safeAdd(payroll.getIncentive()));
+        boolean withinEsiCeiling = grossForEsi.compareTo(esiWageCeiling) <= 0;
         if (esicApplicable && withinEsiCeiling) {
-            // ESI calculated on Working Day Amount (prorated salary)
-            BigDecimal esiEmployee = workingDayAmount.multiply(esiEmployeeRate).setScale(0, RoundingMode.HALF_UP);
-            BigDecimal esiEmployer = workingDayAmount.multiply(esiEmployerRate).setScale(0, RoundingMode.HALF_UP);
+            // ESI calculated on Gross Salary (Working Day Amount + OT + Allowances + Bonus + Incentive)
+            BigDecimal esiEmployee = grossForEsi.multiply(esiEmployeeRate).setScale(0, RoundingMode.HALF_UP);
+            BigDecimal esiEmployer = grossForEsi.multiply(esiEmployerRate).setScale(0, RoundingMode.HALF_UP);
             payroll.setEsiEmployee(esiEmployee);
             // Store employer contribution if needed for reports
+            log.debug("Employee {} ESI calculated: Gross {} * Rate {} = {}", 
+                    emp.getEmpCode(), grossForEsi, esiEmployeeRate, esiEmployee);
+        } else {
+            payroll.setEsiEmployee(BigDecimal.ZERO);
+            if (!esicApplicable) {
+                log.debug("Employee {} not ESI applicable", emp.getEmpCode());
+            } else {
+                log.debug("Employee {} gross {} exceeds ESI ceiling {}", 
+                        emp.getEmpCode(), grossForEsi, esiWageCeiling);
+            }
         }
 
         // PF = WORKING DAY AMOUNT * pf_employee_rate (org-configurable)
@@ -435,9 +662,14 @@ public class PayrollService {
         }
 
         // Loan deduction from loan module (tenant-aware)
+        // Check for enforced amounts for this specific payroll period (month/year)
+        // Includes: Regular EMI loans, One-time loans, Flexible loans (outstanding balance)
         String tenantId = payroll.getTenantId() != null ? payroll.getTenantId() : payroll.getOrgId();
-        BigDecimal loanEmi = loanService.getMonthlyEmiDeduction(tenantId, payroll.getEmpId());
+        BigDecimal loanEmi = loanService.getMonthlyEmiDeduction(tenantId, payroll.getEmpId(), payroll.getMonth(), payroll.getYear());
         payroll.setLoanDeduction(loanEmi); // Keep for detailed reporting
+        payroll.setScheduledLoanAmount(loanEmi); // Store scheduled amount for smart adjustment
+        log.debug("Employee {} loan deduction calculated: ₹{} (includes active loans with outstanding balance)", 
+                payroll.getEmpId(), loanEmi);
 
         // Auto-populate Due from overdue loan EMIs (as of payroll month start)
         // For July 2025 payroll, this checks for EMIs overdue before July 1, 2025
@@ -652,7 +884,133 @@ public class PayrollService {
         
         payroll.setStatus(PayrollStatus.APPROVED);
         payroll.setApprovedBy(approvedBy);
+        
+        // Update loan balances if loan was adjusted (smart adjustment)
+        updateLoanBalancesForAdjustedAmount(payroll);
+        
         return payrollRepo.save(payroll);
+    }
+    
+    /**
+     * Update loan balances when loan amount is adjusted (smart adjustment to prevent negative net salary)
+     * Only the adjusted amount is deducted from loan, remaining stays as outstanding
+     * 
+     * Example: Flexible loan of ₹5,000, but net salary is only ₹4,000
+     * - Scheduled: ₹5,000 (from getMonthlyEmiDeduction)
+     * - Adjusted: ₹4,000 (max deductible = GROSS - Other Deductions + DUE)
+     * - Deduct ₹4,000 from flexible loan, ₹1,000 remains outstanding
+     * - Payment history shows: "Deducted in salary of DECEMBER 2025 (₹4000 deducted, ₹1000 remaining outstanding)"
+     */
+    private void updateLoanBalancesForAdjustedAmount(Payroll payroll) {
+        BigDecimal scheduledAmount = payroll.getScheduledLoanAmount() != null ? payroll.getScheduledLoanAmount() : BigDecimal.ZERO;
+        BigDecimal adjustedAmount = payroll.getAdjustedLoanAmount() != null ? payroll.getAdjustedLoanAmount() : payroll.getAdvance();
+        
+        String tenantId = payroll.getTenantId() != null ? payroll.getTenantId() : payroll.getOrgId();
+        List<com.example.hrms.loan.domain.Loan> activeLoans = loanService.getActiveLoans(tenantId, payroll.getEmpId());
+        String monthName = java.time.Month.of(payroll.getMonth()).name();
+        String yearStr = String.valueOf(payroll.getYear());
+        
+        // Always process loans based on adjusted amount (which may be less than scheduled for flexible loans)
+        // adjustedAmount is the maximum that can be deducted without making net salary negative
+        BigDecimal remainingToDeduct = adjustedAmount;
+        
+        log.info("Loan adjustment for employee {}: Scheduled ₹{}, Adjusted ₹{}, Remaining to deduct ₹{}", 
+                payroll.getEmpId(), scheduledAmount, adjustedAmount, remainingToDeduct);
+        
+        // First, process flexible loans (they can be partially deducted)
+        // Flexible loans are deducted first because they can accept partial payments
+        for (com.example.hrms.loan.domain.Loan loan : activeLoans) {
+            if (remainingToDeduct.compareTo(BigDecimal.ZERO) <= 0) break;
+            
+            if (Boolean.TRUE.equals(loan.getIsFlexibleDeduction())) {
+                BigDecimal loanOutstanding = loan.getOutstandingBalance();
+                if (loanOutstanding.compareTo(BigDecimal.ZERO) > 0) {
+                    // Deduct up to remainingToDeduct or loanOutstanding, whichever is smaller
+                    BigDecimal deductFromThisLoan = remainingToDeduct.min(loanOutstanding);
+                    BigDecimal remainingAfterDeduction = loanOutstanding.subtract(deductFromThisLoan);
+                    
+                    // Create payment description
+                    String paymentDescription;
+                    if (remainingAfterDeduction.compareTo(BigDecimal.ZERO) > 0) {
+                        // Partial deduction - show remaining
+                        paymentDescription = String.format("Deducted in salary of %s %s (₹%s deducted, ₹%s remaining outstanding)", 
+                                monthName, yearStr, deductFromThisLoan, remainingAfterDeduction);
+                    } else {
+                        // Full deduction
+                        paymentDescription = String.format("Deducted in salary of %s %s", monthName, yearStr);
+                    }
+                    
+                    // Record payment in loan history
+                    loanService.recordPayrollDeduction(
+                            loan.getId(), 
+                            deductFromThisLoan, 
+                            payroll.getId(), 
+                            payroll.getMonth(), 
+                            payroll.getYear(),
+                            paymentDescription);
+                    
+                    remainingToDeduct = remainingToDeduct.subtract(deductFromThisLoan);
+                    
+                    log.debug("Flexible loan {}: Deducted ₹{} from outstanding ₹{}, remaining ₹{}", 
+                            loan.getId(), deductFromThisLoan, loanOutstanding, remainingAfterDeduction);
+                }
+            }
+        }
+        
+        // Then process one-time loans (only if there's remaining amount after flexible loans)
+        // One-time loans are always fully deducted if there's enough balance
+        for (com.example.hrms.loan.domain.Loan loan : activeLoans) {
+            if (remainingToDeduct.compareTo(BigDecimal.ZERO) <= 0) break;
+            
+            if (Boolean.TRUE.equals(loan.getIsOneTimeDeduction()) && 
+                loan.getEmiAmount() != null && loan.getEmiAmount().compareTo(BigDecimal.ZERO) > 0) {
+                
+                // For one-time loans, deduct full amount if there's enough balance
+                if (remainingToDeduct.compareTo(loan.getEmiAmount()) >= 0) {
+                    BigDecimal oneTimeAmount = loan.getEmiAmount();
+                    String oneTimeDescription = String.format("Deducted in salary of %s %s", monthName, yearStr);
+                    
+                    // Record payment
+                    loanService.recordPayrollDeduction(
+                            loan.getId(), 
+                            oneTimeAmount, 
+                            payroll.getId(), 
+                            payroll.getMonth(), 
+                            payroll.getYear(),
+                            oneTimeDescription);
+                    
+                    remainingToDeduct = remainingToDeduct.subtract(oneTimeAmount);
+                }
+            }
+        }
+        
+        // Then process EMI loans (only if there's remaining amount after flexible/one-time loans)
+        String payrollDescription = String.format("Deducted in salary of %s %s", monthName, yearStr);
+        for (com.example.hrms.loan.domain.Loan loan : activeLoans) {
+            if (remainingToDeduct.compareTo(BigDecimal.ZERO) <= 0) break;
+            
+            // Process EMI loans only if they have fixed EMI and are not flexible/one-time
+            if (!Boolean.TRUE.equals(loan.getIsFlexibleDeduction()) && 
+                !Boolean.TRUE.equals(loan.getIsOneTimeDeduction()) &&
+                loan.getEmiAmount() != null && loan.getEmiAmount().compareTo(BigDecimal.ZERO) > 0) {
+                
+                // For EMI loans, we can only deduct full EMI or nothing
+                if (remainingToDeduct.compareTo(loan.getEmiAmount()) >= 0) {
+                    loanService.processEmiPayment(loan.getId(), payroll.getId(), payrollDescription);
+                    remainingToDeduct = remainingToDeduct.subtract(loan.getEmiAmount());
+                }
+            }
+        }
+        
+        // Log the adjustment
+        if (scheduledAmount.compareTo(BigDecimal.ZERO) > 0 && adjustedAmount.compareTo(scheduledAmount) < 0) {
+            BigDecimal adjustmentDifference = scheduledAmount.subtract(adjustedAmount);
+            log.info("Employee {} loan adjusted: Scheduled ₹{}, Adjusted ₹{}, Remaining outstanding ₹{}", 
+                    payroll.getEmpId(), scheduledAmount, adjustedAmount, adjustmentDifference);
+        } else {
+            log.debug("Employee {} loan processed: Scheduled ₹{}, Adjusted ₹{}", 
+                    payroll.getEmpId(), scheduledAmount, adjustedAmount);
+        }
     }
 
     /**
@@ -730,16 +1088,18 @@ public class PayrollService {
     }
 
     /**
-     * Delete payroll (only if DRAFT)
+     * Delete payroll
      * Also clears one-time loan associations so they can be re-deducted
+     * NOTE: Status validation removed for testing phase - can delete any status
      */
     public void deletePayroll(Long payrollId) {
         Payroll payroll = payrollRepo.findById(payrollId)
                 .orElseThrow(() -> new IllegalArgumentException("Payroll not found: " + payrollId));
         
-        if (payroll.getStatus() != PayrollStatus.DRAFT) {
-            throw new IllegalStateException("Cannot delete payroll with status: " + payroll.getStatus());
-        }
+        // TODO: Re-enable status validation after testing
+        // if (payroll.getStatus() != PayrollStatus.DRAFT) {
+        //     throw new IllegalStateException("Cannot delete payroll with status: " + payroll.getStatus());
+        // }
         
         // Clear one-time loan associations before deleting payroll
         loanService.clearOneTimeLoanAssociations(payrollId);
@@ -748,8 +1108,9 @@ public class PayrollService {
     }
 
     /**
-     * Delete all payrolls for a month (only if all are DRAFT)
+     * Delete all payrolls for a month
      * Also clears one-time loan associations so they can be re-deducted
+     * NOTE: Status validation removed for testing phase - can delete any status
      * @return number of payrolls deleted
      */
     @Transactional
@@ -764,13 +1125,14 @@ public class PayrollService {
             return 0;
         }
         
+        // TODO: Re-enable status validation after testing
         // Check if any are not in DRAFT status
-        for (Payroll p : payrolls) {
-            if (p.getStatus() != PayrollStatus.DRAFT) {
-                throw new IllegalStateException("Cannot delete payroll with status: " + p.getStatus() + 
-                        " for employee: " + p.getEmpId());
-            }
-        }
+        // for (Payroll p : payrolls) {
+        //     if (p.getStatus() != PayrollStatus.DRAFT) {
+        //         throw new IllegalStateException("Cannot delete payroll with status: " + p.getStatus() + 
+        //                 " for employee: " + p.getEmpId());
+        //     }
+        // }
         
         // Clear one-time loan associations before deleting payrolls
         // This makes the loans available for re-deduction in future payrolls
@@ -785,6 +1147,7 @@ public class PayrollService {
     /**
      * Delete payroll for a single employee (for recalculation)
      * Also clears one-time loan associations so they can be re-deducted
+     * NOTE: Status validation removed for testing phase - can delete any status
      */
     @Transactional
     public void deleteEmployeePayroll(String orgId, String empId, int year, int month) {
@@ -799,10 +1162,11 @@ public class PayrollService {
         
         Payroll payroll = payrollOpt.get();
         
+        // TODO: Re-enable status validation after testing
         // Only allow deletion if status is DRAFT
-        if (payroll.getStatus() != PayrollStatus.DRAFT) {
-            throw new IllegalStateException("Cannot delete payroll with status: " + payroll.getStatus());
-        }
+        // if (payroll.getStatus() != PayrollStatus.DRAFT) {
+        //     throw new IllegalStateException("Cannot delete payroll with status: " + payroll.getStatus());
+        // }
         
         // Clear one-time loan associations before deleting payroll
         loanService.clearOneTimeLoanAssociations(payroll.getId());
@@ -1027,6 +1391,10 @@ public class PayrollService {
         details.put("year", payroll.getYear());
         details.put("month", payroll.getMonth());
         details.put("status", payroll.getStatus().name());
+        
+        // Loan adjustment info
+        details.put("scheduledLoanAmount", payroll.getScheduledLoanAmount());
+        details.put("adjustedLoanAmount", payroll.getAdjustedLoanAmount());
 
         // Salary structure
         Map<String, Object> salary = new LinkedHashMap<>();
@@ -1037,12 +1405,18 @@ public class PayrollService {
 
         // Attendance summary
         Map<String, Object> attendance = new LinkedHashMap<>();
-        attendance.put("totalWorkingDays", payroll.getTotalWorkingDays());
+        attendance.put("totalWorkingDays", payroll.getTotalWorkingDays()); // Shows threshold days
         attendance.put("presentDays", payroll.getPresentDays());
         attendance.put("absentDays", payroll.getAbsentDays());
         attendance.put("halfDays", payroll.getHalfDays());
+        attendance.put("paidLeaveDays", payroll.getPaidLeaveDays() != null ? payroll.getPaidLeaveDays() : 0);
+        attendance.put("unpaidLeaveDays", payroll.getUnpaidLeaveDays() != null ? payroll.getUnpaidLeaveDays() : 0);
         attendance.put("lateDays", payroll.getLateDays());
         attendance.put("totalLateHours", payroll.getTotalLateHours());
+        attendance.put("lateHourCharges", payroll.getLateHourCharges());
+        attendance.put("earlyOutDays", payroll.getEarlyOutDays() != null ? payroll.getEarlyOutDays() : 0);
+        attendance.put("totalEarlyHours", payroll.getTotalEarlyHours() != null ? payroll.getTotalEarlyHours() : BigDecimal.ZERO);
+        attendance.put("earlyHourCharges", payroll.getEarlyHourCharges() != null ? payroll.getEarlyHourCharges() : BigDecimal.ZERO);
         attendance.put("weeklyOffDays", payroll.getWeeklyOffDays());
         attendance.put("holidayDays", payroll.getHolidayDays());
         attendance.put("overtimeDays", payroll.getOvertimeDays());
@@ -1142,9 +1516,14 @@ public class PayrollService {
             row.put("overtimeHours", p.getOvertimeHours());
             row.put("overtimeDayAmount", p.getOvertimeDayAmount());
             row.put("overtimeHourAmount", p.getOvertimeHourAmount());
+            row.put("paidLeaveDays", p.getPaidLeaveDays() != null ? p.getPaidLeaveDays() : 0);
+            row.put("paidLeaveCharges", p.getPaidLeaveCharges() != null ? p.getPaidLeaveCharges() : BigDecimal.ZERO);
             row.put("lateDays", p.getLateDays());
             row.put("totalLateHours", p.getTotalLateHours());
             row.put("lateHourCharges", p.getLateHourCharges());
+            row.put("earlyOutDays", p.getEarlyOutDays() != null ? p.getEarlyOutDays() : 0);
+            row.put("totalEarlyHours", p.getTotalEarlyHours() != null ? p.getTotalEarlyHours() : BigDecimal.ZERO);
+            row.put("earlyHourCharges", p.getEarlyHourCharges() != null ? p.getEarlyHourCharges() : BigDecimal.ZERO);
             row.put("houseRent", p.getHouseRent());
             row.put("medicalExpense", p.getMedicalExpense());
             row.put("grossSalary", p.getGrossSalary());

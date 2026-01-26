@@ -2,6 +2,7 @@ package com.example.hrms.attendance.controller;
 
 import com.example.hrms.attendance.domain.AttendanceDay;
 import com.example.hrms.attendance.domain.ImportBatch;
+import com.example.hrms.attendance.dto.AttendanceLogsResponse;
 import com.example.hrms.attendance.dto.DailyPunchLogDTO;
 import com.example.hrms.attendance.dto.MonthlySummaryDTO;
 import com.example.hrms.attendance.dto.SummaryRowDTO;
@@ -10,6 +11,8 @@ import com.example.hrms.attendance.repo.AttendancePunchRepository;
 import com.example.hrms.attendance.repo.ImportBatchRepository;
 import com.example.hrms.attendance.service.AttendanceQueryService;
 import com.example.hrms.attendance.service.AttendanceSummaryService;
+import com.example.hrms.attendance.service.AttendanceExcelService;
+import com.example.hrms.domain.enums.RoundingRule;
 import com.example.hrms.domain.Employee;
 import com.example.hrms.domain.Holiday;
 import com.example.hrms.payroll.domain.Payroll;
@@ -19,9 +22,11 @@ import com.example.hrms.repo.HolidayRepository;
 import com.example.hrms.repo.ShiftRepository;
 import com.example.hrms.tenant.TenantContext;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -33,10 +38,12 @@ import java.util.stream.Collectors;
 @RestController
 @RequestMapping("/api/attendance")
 @RequiredArgsConstructor
+@Slf4j
 public class AttendanceQueryController {
 
     private final AttendanceQueryService service;
     private final AttendanceSummaryService summaryService;
+    private final AttendanceExcelService excelService;
     private final EmployeeRepository employeeRepository;
     private final AttendanceDayRepository attendanceDayRepository;
     private final AttendancePunchRepository punchRepository;
@@ -46,13 +53,27 @@ public class AttendanceQueryController {
     private final PayrollRepository payrollRepository;
     
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm");
+    
+    /**
+     * Helper method to convert RoundingRule enum to minutes.
+     */
+    private int getRoundingMinutes(RoundingRule rule) {
+        if (rule == null) return 0;
+        return switch (rule) {
+            case NEAREST_5, UP_5, DOWN_5 -> 5;
+            case NEAREST_15 -> 15;
+            case NEAREST_30 -> 30;
+            case NONE -> 0;
+        };
+    }
 
     /**
      * Get daily punch logs for a specific employee.
      * Returns all days of the month with punch times, work hours, status, etc.
+     * Includes OT/Late deduction totals in the response.
      */
     @GetMapping("/logs")
-    public ResponseEntity<List<DailyPunchLogDTO>> logs(
+    public ResponseEntity<AttendanceLogsResponse> logs(
             @RequestParam int month, 
             @RequestParam int year,
             @RequestParam(required = false) Long empId,
@@ -60,7 +81,127 @@ public class AttendanceQueryController {
 
         String tenantId = TenantContext.getTenantId();
         Long orgId = getOrgIdFromTenant(tenantId);
-        return ResponseEntity.ok(service.getEmployeeLogs(orgId, tenantId, empId, empCode, month, year));
+        List<DailyPunchLogDTO> logs = service.getEmployeeLogs(orgId, tenantId, empId, empCode, month, year);
+        
+        // Calculate totals
+        int totalOtDeductionMins = logs.stream()
+                .mapToInt(DailyPunchLogDTO::getOtDeductionMins)
+                .sum();
+        int totalLateDeductionMins = logs.stream()
+                .mapToInt(DailyPunchLogDTO::getLateDeductionMins)
+                .sum();
+        int totalEarlyDeductionMins = logs.stream()
+                .mapToInt(DailyPunchLogDTO::getEarlyDeductionMins)
+                .sum();
+        
+        // Calculate paid/unpaid leave days
+        Long empIdForLeave = null;
+        String empCodeForLeave = empCode;
+        if (empId != null) {
+            empIdForLeave = empId;
+            Employee emp = employeeRepository.findById(empId).orElse(null);
+            if (emp != null) {
+                empCodeForLeave = emp.getEmpCode();
+            }
+        }
+        
+        int paidLeaveDays = 0;
+        int unpaidLeaveDays = 0;
+        if (empCodeForLeave != null && tenantId != null) {
+            LocalDate startDate = LocalDate.of(year, month, 1);
+            LocalDate endDate = startDate.withDayOfMonth(startDate.lengthOfMonth());
+            
+            // Query APPROVED leave records for this employee in this month
+            com.example.hrms.leave.repo.EmployeeLeaveRepository leaveRepo = 
+                    ((com.example.hrms.attendance.service.impl.AttendanceQueryServiceImpl) service).getLeaveRepo();
+            List<com.example.hrms.leave.domain.EmployeeLeave> approvedLeaves = leaveRepo
+                    .findByTenantIdAndEmpIdAndStartDateLessThanEqualAndEndDateGreaterThanEqual(
+                            tenantId, empCodeForLeave, endDate, startDate);
+            
+            log.info("AttendanceQueryController: Found {} leave records for employee {} in {} {}", 
+                    approvedLeaves.size(), empCodeForLeave, year, month);
+            
+            // Count paid vs unpaid leave days
+            for (com.example.hrms.leave.domain.EmployeeLeave leave : approvedLeaves) {
+                log.debug("Leave {} - Status: {}, Payable: {}, LeaveType: {}, IsPaid: {}", 
+                        leave.getId(), leave.getStatus(), leave.getPayable(), 
+                        leave.getLeaveType() != null ? leave.getLeaveType().getName() : "null",
+                        leave.getLeaveType() != null ? leave.getLeaveType().getIsPaid() : "null");
+                
+                if (leave.getStatus() == com.example.hrms.leave.domain.enums.LeaveStatus.APPROVED) {
+                    LocalDate leaveDate = leave.getStartDate();
+                    while (!leaveDate.isAfter(leave.getEndDate()) && !leaveDate.isAfter(endDate)) {
+                        if (!leaveDate.isBefore(startDate)) {
+                            // Check if leave type is paid - paid leave types always count as paid leave
+                            // The payable flag is used for balance tracking, but if leave type is paid, it should always be counted as paid
+                            boolean isPaidLeave = leave.getLeaveType() != null && 
+                                                  Boolean.TRUE.equals(leave.getLeaveType().getIsPaid());
+                            
+                            log.debug("Date {} - isPaidLeave: {} (leaveType.isPaid: {})", 
+                                    leaveDate, isPaidLeave,
+                                    leave.getLeaveType() != null ? leave.getLeaveType().getIsPaid() : null);
+                            
+                            if (isPaidLeave) {
+                                paidLeaveDays++;
+                            } else {
+                                unpaidLeaveDays++;
+                            }
+                        }
+                        leaveDate = leaveDate.plusDays(1);
+                    }
+                } else {
+                    log.debug("Leave {} not APPROVED (status: {})", leave.getId(), leave.getStatus());
+                }
+            }
+            
+            log.info("AttendanceQueryController: Calculated paidLeaveDays: {}, unpaidLeaveDays: {} for employee {} in {} {}", 
+                    paidLeaveDays, unpaidLeaveDays, empCodeForLeave, year, month);
+        }
+        
+        AttendanceLogsResponse response = AttendanceLogsResponse.builder()
+                .logs(logs)
+                .totalOtDeductionMins(totalOtDeductionMins)
+                .totalLateDeductionMins(totalLateDeductionMins)
+                .totalEarlyDeductionMins(totalEarlyDeductionMins)
+                .paidLeaveDays(paidLeaveDays)
+                .unpaidLeaveDays(unpaidLeaveDays)
+                .build();
+        
+        return ResponseEntity.ok(response);
+    }
+    
+    /**
+     * Export attendance logs for a specific employee to Excel.
+     */
+    @GetMapping("/logs/export")
+    public ResponseEntity<byte[]> exportLogs(
+            @RequestParam int month, 
+            @RequestParam int year,
+            @RequestParam(required = false) Long empId,
+            @RequestParam(required = false) String empCode) throws IOException {
+        
+        String tenantId = TenantContext.getTenantId();
+        Long orgId = getOrgIdFromTenant(tenantId);
+        List<DailyPunchLogDTO> logs = service.getEmployeeLogs(orgId, tenantId, empId, empCode, month, year);
+        
+        if (logs.isEmpty()) {
+            return ResponseEntity.noContent().build();
+        }
+        
+        String exportEmpCode = empCode != null ? empCode : 
+            (empId != null ? employeeRepository.findById(empId)
+                .map(Employee::getEmpCode)
+                .orElse("Employee") : "Employee");
+        
+        byte[] excelData = excelService.exportAttendanceLogs(tenantId, exportEmpCode, month, year, logs);
+        
+        String filename = "Attendance_" + exportEmpCode + "_" + 
+            String.format("%02d", month) + "_" + year + ".xlsx";
+        
+        return ResponseEntity.ok()
+                .header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                .header("Content-Disposition", "attachment; filename=\"" + filename + "\"")
+                .body(excelData);
     }
 
     /**
@@ -440,6 +581,131 @@ public class AttendanceQueryController {
             }
         }
         
+        // Clear missing punch flag if manual OUT was set
+        if (manualOut != null && !manualOut.isBlank()) {
+            day.setMissingPunch(false);
+            day.setMissingPunchType(null);
+        }
+        
+        // Recalculate late/early with shift rules and rounding if both IN and OUT are now available
+        LocalDateTime effectiveIn = day.getManualIn() != null ? day.getManualIn() : day.getFirstIn();
+        LocalDateTime effectiveOut = day.getManualOut() != null ? day.getManualOut() : day.getLastOut();
+        
+        if (effectiveIn != null && effectiveOut != null && day.getShiftCodes() != null && !day.getShiftCodes().isBlank()) {
+            // Get shift information
+            String primaryShiftCode = day.getShiftCodes().split(",")[0];
+            String tenantId = day.getTenantId();
+            Optional<com.example.hrms.domain.Shift> shiftOpt = (tenantId != null 
+                ? shiftRepository.findByTenantIdAndCode(tenantId, primaryShiftCode)
+                : shiftRepository.findByTenantIdAndCode("ORG001", primaryShiftCode));
+            
+            if (shiftOpt.isPresent()) {
+                com.example.hrms.domain.Shift shift = shiftOpt.get();
+                LocalTime shiftStart = shift.getStartTime();
+                LocalTime shiftEnd = shift.getEndTime();
+                LocalDate workDate = day.getWorkDate();
+                boolean crossedMidnight = Boolean.TRUE.equals(shift.getCrossesMidnight());
+                
+                // Apply rounding rules if configured
+                RoundingRule roundingRule = shift.getRounding() != null ? shift.getRounding() : RoundingRule.NONE;
+                int roundingMins = getRoundingMinutes(roundingRule);
+                int graceInMins = shift.getGraceInMins() != null ? shift.getGraceInMins() : 0;
+                int graceOutMins = shift.getGraceOutMins() != null ? shift.getGraceOutMins() : 0;
+                
+                // Calculate rounded IN time (for late calculation)
+                LocalDateTime roundedIn = effectiveIn;
+                if (roundingMins > 0) {
+                    LocalTime inTime = effectiveIn.toLocalTime();
+                    int minuteOfDay = inTime.getHour() * 60 + inTime.getMinute();
+                    int shiftStartMinute = shiftStart.getHour() * 60 + shiftStart.getMinute();
+                    
+                    // Round UP for IN time (favor employee)
+                    if (minuteOfDay > shiftStartMinute) {
+                        int roundedMinute = ((minuteOfDay + roundingMins - 1) / roundingMins) * roundingMins;
+                        roundedIn = LocalDateTime.of(workDate, LocalTime.of(roundedMinute / 60, roundedMinute % 60));
+                    } else {
+                        roundedIn = LocalDateTime.of(workDate, shiftStart);
+                    }
+                }
+                
+                // Calculate late IN based on rounded time
+                LocalTime roundedInTime = roundedIn.toLocalTime();
+                if (roundedInTime.isAfter(shiftStart.plusMinutes(graceInMins))) {
+                    day.setIsLateIn(true);
+                    long lateMins = java.time.Duration.between(
+                        LocalDateTime.of(workDate, shiftStart.plusMinutes(graceInMins)),
+                        roundedIn
+                    ).toMinutes();
+                    day.setLateByMins((int) lateMins);
+                    day.setRoundedIn(roundedIn);
+                } else {
+                    day.setIsLateIn(false);
+                    day.setLateByMins(0);
+                    day.setRoundedIn(LocalDateTime.of(workDate, shiftStart));
+                }
+                
+                // Calculate rounded OUT time (for early calculation)
+                LocalDateTime roundedOut = effectiveOut;
+                LocalDateTime expectedEnd = crossedMidnight 
+                    ? LocalDateTime.of(workDate.plusDays(1), shiftEnd)
+                    : LocalDateTime.of(workDate, shiftEnd);
+                
+                if (roundingMins > 0) {
+                    LocalTime outTime = effectiveOut.toLocalTime();
+                    LocalDate outDate = effectiveOut.toLocalDate();
+                    int minuteOfDay = outTime.getHour() * 60 + outTime.getMinute();
+                    int shiftEndMinute = shiftEnd.getHour() * 60 + shiftEnd.getMinute();
+                    
+                    // Round DOWN for OUT time (penalize early departure)
+                    if (minuteOfDay < shiftEndMinute) {
+                        int roundedMinute = (minuteOfDay / roundingMins) * roundingMins;
+                        roundedOut = LocalDateTime.of(outDate, LocalTime.of(roundedMinute / 60, roundedMinute % 60));
+                    } else {
+                        roundedOut = expectedEnd;
+                    }
+                }
+                
+                // Calculate early OUT based on rounded time vs shift end (with grace period)
+                LocalTime roundedOutTime = roundedOut.toLocalTime();
+                LocalTime shiftEndWithGrace = shiftEnd.minusMinutes(graceOutMins);
+                LocalDateTime expectedEndWithGrace = crossedMidnight 
+                    ? LocalDateTime.of(workDate.plusDays(1), shiftEndWithGrace)
+                    : LocalDateTime.of(workDate, shiftEndWithGrace);
+                
+                if (roundedOut.isBefore(expectedEndWithGrace)) {
+                    day.setIsEarlyOut(true);
+                    long earlyMins = java.time.Duration.between(
+                        roundedOut,
+                        expectedEndWithGrace
+                    ).toMinutes();
+                    day.setEarlyByMins((int) earlyMins);
+                    day.setRoundedOut(roundedOut);
+                } else {
+                    day.setIsEarlyOut(false);
+                    day.setEarlyByMins(0);
+                    day.setRoundedOut(roundedOut.isAfter(expectedEnd) ? roundedOut : expectedEnd);
+                }
+                
+                // Adjust work time: deduct late + early minutes from total work time
+                // This ensures work time reflects actual productive time
+                if (day.getTotalWorkMin() != null && day.getTotalWorkMin() > 0) {
+                    int adjustedWorkMins = day.getTotalWorkMin();
+                    if (day.getLateByMins() != null && day.getLateByMins() > 0) {
+                        adjustedWorkMins -= day.getLateByMins();
+                    }
+                    if (day.getEarlyByMins() != null && day.getEarlyByMins() > 0) {
+                        adjustedWorkMins -= day.getEarlyByMins();
+                    }
+                    // Don't let it go below 0
+                    if (adjustedWorkMins < 0) {
+                        adjustedWorkMins = 0;
+                    }
+                    // Update work minutes with adjusted value
+                    day.setTotalWorkMin(adjustedWorkMins);
+                }
+            }
+        }
+        
         // Clear the needs review flag after admin update
         day.setNeedsReview(false);
         
@@ -451,6 +717,16 @@ public class AttendanceQueryController {
         result.put("dayId", day.getId());
         result.put("workMinutes", day.getTotalWorkMin());
         result.put("status", day.getStatus());
+        result.put("lateByMins", day.getLateByMins() != null ? day.getLateByMins() : 0);
+        result.put("earlyByMins", day.getEarlyByMins() != null ? day.getEarlyByMins() : 0);
+        result.put("isLateIn", Boolean.TRUE.equals(day.getIsLateIn()));
+        result.put("isEarlyOut", Boolean.TRUE.equals(day.getIsEarlyOut()));
+        if (day.getRoundedIn() != null) {
+            result.put("roundedIn", day.getRoundedIn().toLocalTime().format(TIME_FMT));
+        }
+        if (day.getRoundedOut() != null) {
+            result.put("roundedOut", day.getRoundedOut().toLocalTime().format(TIME_FMT));
+        }
         return ResponseEntity.ok(result);
     }
 

@@ -9,11 +9,17 @@ import com.example.hrms.attendance.service.AttendanceEngine;
 import com.example.hrms.domain.Employee;
 import com.example.hrms.domain.EmployeeShiftAssignment;
 import com.example.hrms.domain.Shift;
+import com.example.hrms.domain.Holiday;
+import com.example.hrms.domain.WeeklyOffConfig;
+import com.example.hrms.leave.domain.EmployeeLeave;
+import com.example.hrms.leave.domain.enums.LeaveStatus;
+import com.example.hrms.leave.repo.EmployeeLeaveRepository;
 import com.example.hrms.payroll.domain.Payroll;
 import com.example.hrms.payroll.repo.PayrollRepository;
 import com.example.hrms.repo.EmployeeRepository;
 import com.example.hrms.repo.EmployeeShiftAssignmentRepository;
 import com.example.hrms.repo.ShiftRepository;
+import com.example.hrms.service.ConfigCacheService;
 import com.example.hrms.tenant.TenantContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -37,6 +43,8 @@ public class AttendanceSummaryServiceImpl implements AttendanceSummaryService {
     private final ShiftRepository shiftRepo;
     private final EmployeeShiftAssignmentRepository shiftAssignmentRepo;
     private final PayrollRepository payrollRepo;
+    private final EmployeeLeaveRepository leaveRepo;
+    private final ConfigCacheService configCacheService;
 
     private static final ZoneId ORG_TZ = ZoneId.of("Asia/Kolkata");
     private static final int LATE_THRESHOLD_MINS = 10;
@@ -214,6 +222,66 @@ public class AttendanceSummaryServiceImpl implements AttendanceSummaryService {
             // Make sure absent is not negative
             if (effectiveAbsent < 0) effectiveAbsent = 0;
             
+            // Calculate paid/unpaid leave days from EmployeeLeave records
+            int paidLeaveDays = 0;
+            int unpaidLeaveDays = 0;
+            LocalDate startDate = ym.atDay(1);
+            LocalDate endDate = ym.atEndOfMonth();
+            
+            // Get weekly off days and holidays for this employee
+            Set<DayOfWeek> weeklyOffDays = getWeeklyOffDays(tenantId, emp);
+            Set<LocalDate> holidayDates = getHolidayDates(tenantId, year, month, emp);
+            
+            // Query APPROVED leave records for this employee in this month
+            List<EmployeeLeave> approvedLeaves = leaveRepo.findByTenantIdAndEmpIdAndStartDateLessThanEqualAndEndDateGreaterThanEqual(
+                    tenantId, empCode, endDate, startDate);
+            
+            log.debug("Employee {}: Found {} leave records for {} {}", empCode, approvedLeaves.size(), year, month);
+            
+            // Count paid vs unpaid leave days (excluding weekly offs and holidays)
+            for (EmployeeLeave leave : approvedLeaves) {
+                log.debug("Employee {}: Leave {} - Status: {}, Payable: {}, LeaveType: {}, IsPaid: {}", 
+                        empCode, leave.getId(), leave.getStatus(), leave.getPayable(), 
+                        leave.getLeaveType() != null ? leave.getLeaveType().getName() : "null",
+                        leave.getLeaveType() != null ? leave.getLeaveType().getIsPaid() : "null");
+                
+                if (leave.getStatus() == LeaveStatus.APPROVED) {
+                    LocalDate leaveDate = leave.getStartDate();
+                    while (!leaveDate.isAfter(leave.getEndDate()) && !leaveDate.isAfter(endDate)) {
+                        if (!leaveDate.isBefore(startDate)) {
+                            // Only count working days (exclude weekly offs and holidays)
+                            boolean isWeeklyOff = weeklyOffDays.contains(leaveDate.getDayOfWeek());
+                            boolean isHoliday = holidayDates.contains(leaveDate);
+                            if (!isWeeklyOff && !isHoliday) {
+                                // Check if leave type is paid - paid leave types always count as paid leave
+                                // The payable flag is used for balance tracking, but if leave type is paid, it should always be counted as paid
+                                boolean isPaidLeave = leave.getLeaveType() != null && 
+                                                      Boolean.TRUE.equals(leave.getLeaveType().getIsPaid());
+                                
+                                log.debug("Employee {}: Date {} - isPaidLeave: {} (leaveType.isPaid: {})", 
+                                        empCode, leaveDate, isPaidLeave,
+                                        leave.getLeaveType() != null ? leave.getLeaveType().getIsPaid() : null);
+                                
+                                if (isPaidLeave) {
+                                    paidLeaveDays++;
+                                } else {
+                                    unpaidLeaveDays++;
+                                }
+                            } else {
+                                log.debug("Employee {}: Date {} excluded (weeklyOff: {}, holiday: {})", 
+                                        empCode, leaveDate, isWeeklyOff, isHoliday);
+                            }
+                        }
+                        leaveDate = leaveDate.plusDays(1);
+                    }
+                } else {
+                    log.debug("Employee {}: Leave {} not APPROVED (status: {})", empCode, leave.getId(), leave.getStatus());
+                }
+            }
+            
+            log.info("Employee {}: Calculated paidLeaveDays: {}, unpaidLeaveDays: {} for {} {}", 
+                    empCode, paidLeaveDays, unpaidLeaveDays, year, month);
+            
             // Get payroll info
             Payroll payroll = payrollMap.get(empCode);
             
@@ -229,6 +297,8 @@ public class AttendanceSummaryServiceImpl implements AttendanceSummaryService {
                     .absent(effectiveAbsent)
                     .leaveDays(c.leave)
                     .leave(c.leave)
+                    .paidLeaveDays(paidLeaveDays)
+                    .unpaidLeaveDays(unpaidLeaveDays)
                     .halfDays(c.halfDays)
                     .weeklyOff(c.weeklyOff)
                     .holidays(c.holidays)
@@ -301,5 +371,53 @@ public class AttendanceSummaryServiceImpl implements AttendanceSummaryService {
         } catch (Exception ignore) {}
         
         return "—";
+    }
+    
+    /**
+     * Get weekly off days for an employee (from employee-level or org-level config)
+     */
+    private Set<DayOfWeek> getWeeklyOffDays(String tenantId, Employee emp) {
+        Set<DayOfWeek> weeklyOffDays = new HashSet<>();
+        
+        // First check employee-level weekly off
+        if (emp.getWeeklyOffDays() != null && !emp.getWeeklyOffDays().isEmpty()) {
+            for (String day : emp.getWeeklyOffDays().split(",")) {
+                try {
+                    weeklyOffDays.add(DayOfWeek.valueOf(day.trim().toUpperCase()));
+                } catch (Exception ignored) {}
+            }
+        }
+        
+        // If no employee-level, check org-level (CACHED)
+        if (weeklyOffDays.isEmpty()) {
+            Optional<WeeklyOffConfig> weeklyOff = configCacheService.getWeeklyOffConfig(tenantId, emp.getEmploymentType());
+            if (weeklyOff.isPresent() && weeklyOff.get().getWeeklyOffDays() != null) {
+                for (String day : weeklyOff.get().getWeeklyOffDays().split(",")) {
+                    try {
+                        weeklyOffDays.add(DayOfWeek.valueOf(day.trim().toUpperCase()));
+                    } catch (Exception ignored) {}
+                }
+            }
+        }
+        
+        return weeklyOffDays;
+    }
+    
+    /**
+     * Get holiday dates for a given month/year for an employee's employment type
+     */
+    private Set<LocalDate> getHolidayDates(String tenantId, int year, int month, Employee emp) {
+        YearMonth ym = YearMonth.of(year, month);
+        LocalDate startDate = ym.atDay(1);
+        LocalDate endDate = ym.atEndOfMonth();
+        
+        List<Holiday> holidays = configCacheService.getActiveHolidaysInRange(tenantId, startDate, endDate);
+        Set<LocalDate> holidayDates = new HashSet<>();
+        for (Holiday h : holidays) {
+            if (h.appliesToEmploymentType(emp.getEmploymentType())) {
+                holidayDates.add(h.getHolidayDate());
+            }
+        }
+        return holidayDates;
     }
 }
