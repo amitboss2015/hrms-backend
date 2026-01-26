@@ -32,7 +32,7 @@ public class EmployeeLeave {
   @Column(nullable = false) private BigDecimal totalDays = BigDecimal.ONE;
 
   @Enumerated(EnumType.STRING) @Column(nullable = false)
-  private LeaveStatus status = LeaveStatus.APPROVED;
+  private LeaveStatus status = LeaveStatus.REVIEW;
 
   private Boolean payable = Boolean.TRUE;
   private Boolean consumesBalance = Boolean.TRUE;

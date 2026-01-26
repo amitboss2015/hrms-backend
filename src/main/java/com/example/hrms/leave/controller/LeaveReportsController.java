@@ -3,6 +3,8 @@ package com.example.hrms.leave.controller;
 import com.example.hrms.domain.Employee;
 import com.example.hrms.leave.domain.EmployeeLeave;
 import com.example.hrms.leave.repo.EmployeeLeaveRepository;
+import com.example.hrms.payroll.domain.enums.PayrollStatus;
+import com.example.hrms.payroll.repo.PayrollRepository;
 import com.example.hrms.repo.EmployeeRepository;
 import com.example.hrms.tenant.TenantContext;
 import org.springframework.web.bind.annotation.*;
@@ -17,10 +19,12 @@ public class LeaveReportsController {
 
     private final EmployeeLeaveRepository leaveRepo;
     private final EmployeeRepository employeeRepo;
+    private final PayrollRepository payrollRepo;
 
-    public LeaveReportsController(EmployeeLeaveRepository leaveRepo, EmployeeRepository employeeRepo) {
+    public LeaveReportsController(EmployeeLeaveRepository leaveRepo, EmployeeRepository employeeRepo, PayrollRepository payrollRepo) {
         this.leaveRepo = leaveRepo;
         this.employeeRepo = employeeRepo;
+        this.payrollRepo = payrollRepo;
     }
     
     // Helper to find employee using tenant-aware lookup
@@ -77,6 +81,26 @@ public class LeaveReportsController {
             map.put("status", leave.getStatus().name());
             map.put("remarks", leave.getRemarks());
             
+            // Check if deletion/modification is allowed based on payroll status
+            boolean canDelete = true;
+            boolean canModify = true;
+            
+            int year = leave.getStartDate().getYear();
+            int month = leave.getStartDate().getMonthValue();
+            String tenantId = leave.getTenantId() != null ? leave.getTenantId() : leave.getOrgId();
+            
+            var existingPayroll = payrollRepo.findByTenantIdAndEmpIdAndYearAndMonth(tenantId, leave.getEmpId(), year, month);
+            if (existingPayroll.isPresent()) {
+                PayrollStatus status = existingPayroll.get().getStatus();
+                if (status == PayrollStatus.APPROVED || status == PayrollStatus.PAID) {
+                    canDelete = false;
+                    canModify = false;
+                }
+            }
+            
+            map.put("canDelete", canDelete);
+            map.put("canModify", canModify);
+            
             return map;
         }).sorted(Comparator.comparing(m -> (String) m.get("startDate")))
           .collect(Collectors.toList());
@@ -113,6 +137,26 @@ public class LeaveReportsController {
             map.put("payable", leave.getPayable());
             map.put("remarks", leave.getRemarks());
             map.put("consumedFrom", leave.getConsumedFrom() != null ? leave.getConsumedFrom().name() : null);
+            
+            // Check if deletion/modification is allowed based on payroll status
+            boolean canDelete = true;
+            boolean canModify = true;
+            
+            int year = leave.getStartDate().getYear();
+            int month = leave.getStartDate().getMonthValue();
+            String tenantId = leave.getTenantId() != null ? leave.getTenantId() : leave.getOrgId();
+            
+            var existingPayroll = payrollRepo.findByTenantIdAndEmpIdAndYearAndMonth(tenantId, leave.getEmpId(), year, month);
+            if (existingPayroll.isPresent()) {
+                PayrollStatus status = existingPayroll.get().getStatus();
+                if (status == PayrollStatus.APPROVED || status == PayrollStatus.PAID) {
+                    canDelete = false;
+                    canModify = false;
+                }
+            }
+            
+            map.put("canDelete", canDelete);
+            map.put("canModify", canModify);
             
             return map;
         }).sorted(Comparator.comparing(m -> (String) m.get("startDate")))

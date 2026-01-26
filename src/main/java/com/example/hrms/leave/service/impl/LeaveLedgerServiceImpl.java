@@ -26,7 +26,7 @@ public class LeaveLedgerServiceImpl implements LeaveLedgerService {
     private final LeaveTypeRepository leaveTypeRepo;
     private final EmployeeLeaveRepository leaveRepo;
 
-    private static final List<LeaveStatus> CONSUMED_STATUSES = List.of(LeaveStatus.APPROVED, LeaveStatus.PENDING);
+    private static final List<LeaveStatus> CONSUMED_STATUSES = List.of(LeaveStatus.APPROVED); // Only APPROVED leaves consume balance
 
     public LeaveLedgerServiceImpl(LeaveLedgerRepository ledgerRepo,
                                    EmployeeLeaveAllocationRepository allocationRepo,
