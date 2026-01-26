@@ -74,6 +74,13 @@ public class Payroll {
     
     @Column(precision = 12, scale = 2)
     private BigDecimal lateHourCharges = BigDecimal.ZERO;      // Late hour deduction (hourly rate × late hours)
+    
+    // ============ EARLY CHECKOUT TRACKING ============
+    private Integer earlyOutDays = 0;                          // Days with early checkout
+    @Column(precision = 8, scale = 2)
+    private BigDecimal totalEarlyHours = BigDecimal.ZERO;      // Total early checkout hours
+    @Column(precision = 12, scale = 2)
+    private BigDecimal earlyHourCharges = BigDecimal.ZERO;     // Early checkout deduction (hourly rate × early hours)
 
     // ============ WORKING DAY CALCULATION ============
     @Column(precision = 12, scale = 2)
@@ -90,6 +97,10 @@ public class Payroll {
     
     @Column(precision = 12, scale = 2)
     private BigDecimal overtimeHourAmount = BigDecimal.ZERO; // OVER TIME HR AMOUNT (OT hours * hourly rate)
+    
+    // ============ PAID LEAVE CHARGES ============
+    @Column(precision = 12, scale = 2)
+    private BigDecimal paidLeaveCharges = BigDecimal.ZERO;  // PAID LEAVE CHARGES (per day rate * paid leave days)
 
     // ============ ALLOWANCES ============
     @Column(precision = 12, scale = 2)
@@ -138,6 +149,12 @@ public class Payroll {
     
     @Column(precision = 12, scale = 2)
     private BigDecimal flexibleLoanDeduction = BigDecimal.ZERO;  // Admin-adjusted flexible loan deduction
+    
+    @Column(precision = 12, scale = 2)
+    private BigDecimal scheduledLoanAmount = BigDecimal.ZERO;    // Original scheduled loan amount (before adjustment)
+    
+    @Column(precision = 12, scale = 2)
+    private BigDecimal adjustedLoanAmount = BigDecimal.ZERO;     // Actual loan amount deducted (after smart adjustment)
 
     @Column(precision = 12, scale = 2)
     private BigDecimal professionalTax = BigDecimal.ZERO;
@@ -202,9 +219,11 @@ public class Payroll {
      */
     public void calculateTotals() {
         // Calculate gross salary
+        // GROSS = WORKING DAY AMOUNT + OT DAY AMOUNT + OT HR AMOUNT + PAID LEAVE CHARGES + ALLOWANCES + BONUS + INCENTIVE
         this.grossSalary = safeAdd(workingDayAmount)
                 .add(safeAdd(overtimeDayAmount))
                 .add(safeAdd(overtimeHourAmount))
+                .add(safeAdd(paidLeaveCharges))  // Paid leave charges added to gross
                 .add(safeAdd(houseRent))
                 .add(safeAdd(medicalExpense))
                 .add(safeAdd(conveyanceAllowance))
@@ -223,24 +242,72 @@ public class Payroll {
             this.advance = totalLoanDeductions;
         }
 
-        // Calculate total deductions (for display purposes)
-        // This shows all amounts being deducted from gross
-        // Formula: ESI + PF Employee + PF Company + ADV + Late Hour Charges + Professional Tax + TDS + Other Deductions
-        this.totalDeductions = safeAdd(esiEmployee)
+        // Calculate other deductions (excluding advance/loan)
+        BigDecimal otherDeductions = safeAdd(esiEmployee)
                 .add(safeAdd(pfEmployee))
-                .add(safeAdd(pfCompany))     // PF Company is also deducted per Excel formula
-                .add(effectiveAdvance)       // ADV includes all loan deductions
-                .add(safeAdd(lateHourCharges)) // Late hour deduction
+                .add(safeAdd(pfCompany))
+                .add(safeAdd(lateHourCharges))
+                .add(safeAdd(earlyHourCharges))
                 .add(safeAdd(professionalTax))
                 .add(safeAdd(tds))
                 .add(safeAdd(otherDeduction));
 
+        // SMART LOAN ADJUSTMENT: Cap loan deduction to prevent negative net salary
+        // Calculate maximum loan that can be deducted: GROSS - Other Deductions + DUE
+        BigDecimal maxLoanDeductible = grossSalary
+                .subtract(otherDeductions)
+                .add(safeAdd(due))
+                .max(BigDecimal.ZERO); // Ensure non-negative
+        
+        // Store scheduled loan amount (before adjustment)
+        // scheduledLoanAmount is set during calculateDeductions() from getMonthlyEmiDeduction()
+        BigDecimal scheduledLoan = safeAdd(this.scheduledLoanAmount);
+        if (scheduledLoan.compareTo(BigDecimal.ZERO) == 0) {
+            // If scheduledLoanAmount not set, use effectiveAdvance (which includes loanEmi)
+            scheduledLoan = effectiveAdvance;
+            this.scheduledLoanAmount = effectiveAdvance;
+        }
+        
+        // SMART ADJUSTMENT: If scheduled loan exceeds max deductible, cap it
+        // Example: Scheduled ₹5,000, Max Deductible ₹1,953 → Adjusted ₹1,953
+        BigDecimal adjustedLoanDeduction = effectiveAdvance.min(maxLoanDeductible);
+        BigDecimal loanAdjustment = effectiveAdvance.subtract(adjustedLoanDeduction);
+        
+        // Store adjustment info for loan management update
+        this.adjustedLoanAmount = adjustedLoanDeduction;
+        
+        // Always update scheduledLoanAmount if we have a value
+        if (scheduledLoan.compareTo(BigDecimal.ZERO) > 0) {
+            this.scheduledLoanAmount = scheduledLoan;
+        }
+        
+        // If loan was adjusted (scheduled > adjusted), update advance to adjusted amount
+        // This ensures net salary doesn't go negative
+        if (loanAdjustment.compareTo(BigDecimal.ZERO) > 0) {
+            // Loan was adjusted - store the actual deducted amount
+            effectiveAdvance = adjustedLoanDeduction;
+            this.advance = adjustedLoanDeduction;
+            // Note: loanAdjustment amount (₹3,047) remains as outstanding balance in loan management
+            // This will be deducted in future payrolls when net salary allows
+        }
+
+        // Calculate total deductions (for display purposes)
+        // Formula: ESI + PF Employee + PF Company + ADV (adjusted) + Late Hour Charges + Early Hour Charges + Professional Tax + TDS + Other Deductions
+        this.totalDeductions = otherDeductions
+                .add(effectiveAdvance); // Use adjusted advance
+
         // Calculate net salary using Excel formula:
-        // NET = GROSS - ESI - PF_Own - PF_Company - ADV + DUE
+        // NET = GROSS - ESI - PF_Own - PF_Company - ADV (adjusted) + DUE
         // DUE is ADDED (money owed TO employee)
         this.netSalary = grossSalary
-                .subtract(totalDeductions)   // Subtract all deductions
+                .subtract(totalDeductions)   // Subtract all deductions (with adjusted loan)
                 .add(safeAdd(due));          // ADD due (money owed to employee)
+        
+        // Store loan adjustment info for loan management update
+        if (loanAdjustment.compareTo(BigDecimal.ZERO) > 0) {
+            // This will be used to update loan balance in loan management
+            // The difference (loanAdjustment) remains as outstanding balance
+        }
         
         // Auto-generate REMARKS with calculation breakdown (if not manually set)
         // Format: GROSS - ADV + DUE = NET (only shows non-zero components)
@@ -361,6 +428,15 @@ public class Payroll {
     public BigDecimal getLateHourCharges() { return lateHourCharges; }
     public void setLateHourCharges(BigDecimal lateHourCharges) { this.lateHourCharges = lateHourCharges; }
 
+    public Integer getEarlyOutDays() { return earlyOutDays; }
+    public void setEarlyOutDays(Integer earlyOutDays) { this.earlyOutDays = earlyOutDays; }
+
+    public BigDecimal getTotalEarlyHours() { return totalEarlyHours; }
+    public void setTotalEarlyHours(BigDecimal totalEarlyHours) { this.totalEarlyHours = totalEarlyHours; }
+
+    public BigDecimal getEarlyHourCharges() { return earlyHourCharges; }
+    public void setEarlyHourCharges(BigDecimal earlyHourCharges) { this.earlyHourCharges = earlyHourCharges; }
+
     public BigDecimal getWorkingDayAmount() { return workingDayAmount; }
     public void setWorkingDayAmount(BigDecimal workingDayAmount) { this.workingDayAmount = workingDayAmount; }
 
@@ -375,6 +451,9 @@ public class Payroll {
 
     public BigDecimal getOvertimeHourAmount() { return overtimeHourAmount; }
     public void setOvertimeHourAmount(BigDecimal overtimeHourAmount) { this.overtimeHourAmount = overtimeHourAmount; }
+    
+    public BigDecimal getPaidLeaveCharges() { return paidLeaveCharges; }
+    public void setPaidLeaveCharges(BigDecimal paidLeaveCharges) { this.paidLeaveCharges = paidLeaveCharges; }
 
     public BigDecimal getHouseRent() { return houseRent; }
     public void setHouseRent(BigDecimal houseRent) { this.houseRent = houseRent; }
@@ -420,6 +499,12 @@ public class Payroll {
     
     public BigDecimal getFlexibleLoanDeduction() { return flexibleLoanDeduction; }
     public void setFlexibleLoanDeduction(BigDecimal flexibleLoanDeduction) { this.flexibleLoanDeduction = flexibleLoanDeduction; }
+    
+    public BigDecimal getScheduledLoanAmount() { return scheduledLoanAmount; }
+    public void setScheduledLoanAmount(BigDecimal scheduledLoanAmount) { this.scheduledLoanAmount = scheduledLoanAmount; }
+    
+    public BigDecimal getAdjustedLoanAmount() { return adjustedLoanAmount; }
+    public void setAdjustedLoanAmount(BigDecimal adjustedLoanAmount) { this.adjustedLoanAmount = adjustedLoanAmount; }
 
     public BigDecimal getProfessionalTax() { return professionalTax; }
     public void setProfessionalTax(BigDecimal professionalTax) { this.professionalTax = professionalTax; }

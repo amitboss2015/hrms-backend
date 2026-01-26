@@ -2,12 +2,14 @@ package com.example.hrms.payroll.controller;
 
 import com.example.hrms.payroll.domain.Payroll;
 import com.example.hrms.payroll.domain.enums.PaymentMode;
+import com.example.hrms.payroll.service.PayrollExcelService;
 import com.example.hrms.payroll.service.PayrollService;
 import com.example.hrms.tenant.TenantContext;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.List;
@@ -19,9 +21,11 @@ import java.util.Map;
 public class PayrollController {
 
     private final PayrollService payrollService;
+    private final PayrollExcelService payrollExcelService;
 
-    public PayrollController(PayrollService payrollService) {
+    public PayrollController(PayrollService payrollService, PayrollExcelService payrollExcelService) {
         this.payrollService = payrollService;
+        this.payrollExcelService = payrollExcelService;
     }
 
     /**
@@ -225,6 +229,32 @@ public class PayrollController {
         return ResponseEntity.ok(payrollService.getPaidPayroll(resolveOrgId(orgId), year, month));
     }
 
+    /**
+     * Export payroll payment sheet to Excel
+     */
+    @GetMapping("/export")
+    public ResponseEntity<byte[]> exportPayrollSheet(
+            @RequestParam(required = false) String orgId,
+            @RequestParam Integer year,
+            @RequestParam Integer month) throws IOException {
+        String resolvedOrgId = resolveOrgId(orgId);
+        List<Payroll> payrolls = payrollService.getMonthlyPayroll(resolvedOrgId, year, month);
+        
+        if (payrolls.isEmpty()) {
+            return ResponseEntity.noContent().build();
+        }
+        
+        byte[] excelData = payrollExcelService.exportPayrollSheet(resolvedOrgId, year, month, payrolls);
+        
+        String filename = "Payroll_" + 
+                java.time.Month.of(month).name() + "_" + year + ".xlsx";
+        
+        return ResponseEntity.ok()
+                .header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                .header("Content-Disposition", "attachment; filename=\"" + filename + "\"")
+                .body(excelData);
+    }
+
     // ============ UPDATE ============
 
     /**
@@ -289,6 +319,45 @@ public class PayrollController {
             String remarks = (String) request.getOrDefault("remarks", "");
             
             return ResponseEntity.ok(payrollService.updateFlexibleLoanDeduction(id, amount, loanId, remarks));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+    
+    /**
+     * Manually adjust loan amount for non-EMI loans
+     * Admin can type the exact loan amount to deduct
+     */
+    @PutMapping("/{id}/adjust-loan")
+    public ResponseEntity<?> adjustLoanAmount(
+            @PathVariable Long id,
+            @RequestBody Map<String, Object> request) {
+        try {
+            BigDecimal loanAmount = new BigDecimal(request.get("loanAmount").toString());
+            String remarks = (String) request.getOrDefault("remarks", "Manual loan adjustment");
+            
+            Payroll payroll = payrollService.getPayroll(id)
+                    .orElseThrow(() -> new IllegalArgumentException("Payroll not found: " + id));
+            if (payroll.getStatus() != com.example.hrms.payroll.domain.enums.PayrollStatus.DRAFT) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Can only adjust loan for DRAFT payroll"));
+            }
+            
+            // Set manual loan amount
+            payroll.setLoanDeduction(loanAmount);
+            payroll.setScheduledLoanAmount(loanAmount);
+            payroll.setAdjustedLoanAmount(loanAmount);
+            payroll.setAdvance(loanAmount);
+            
+            // Recalculate totals
+            payroll.calculateTotals();
+            
+            payroll = payrollService.updatePayroll(id, payroll);
+            
+            return ResponseEntity.ok(Map.of(
+                "message", "Loan amount adjusted successfully",
+                "loanAmount", loanAmount,
+                "netSalary", payroll.getNetSalary()
+            ));
         } catch (Exception e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
@@ -372,18 +441,23 @@ public class PayrollController {
 
     /**
      * Process bulk payment for a month
+     * DISABLED: Feature will be launched later
      */
     @PostMapping("/pay-all")
-    public ResponseEntity<List<Payroll>> processMonthlyPayment(
+    public ResponseEntity<Map<String, String>> processMonthlyPayment(
             @RequestParam(required = false) String orgId,
             @RequestParam Integer year,
             @RequestParam Integer month,
             @RequestBody PaymentRequest request) {
-        PaymentMode mode = request.paymentMode != null ? 
-                PaymentMode.valueOf(request.paymentMode) : PaymentMode.BANK_TRANSFER;
-        
-        return ResponseEntity.ok(payrollService.processMonthlyPayment(
-                resolveOrgId(orgId), year, month, mode, request.paidBy));
+        // Feature disabled - will be launched later
+        return ResponseEntity.status(503).body(Map.of(
+            "error", "Pay All feature is currently disabled. Will be launched later."
+        ));
+        // Original implementation (commented out for future use):
+        // PaymentMode mode = request.paymentMode != null ? 
+        //         PaymentMode.valueOf(request.paymentMode) : PaymentMode.BANK_TRANSFER;
+        // return ResponseEntity.ok(payrollService.processMonthlyPayment(
+        //         resolveOrgId(orgId), year, month, mode, request.paidBy));
     }
 
     // ============ DELETE ============
