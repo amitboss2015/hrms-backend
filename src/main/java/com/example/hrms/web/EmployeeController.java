@@ -349,4 +349,73 @@ public class EmployeeController {
         
         return ResponseEntity.ok(rules);
     }
+    
+    /**
+     * Get employee code mapping (device codes → system codes).
+     * This helps users understand which device codes map to which system-generated codes.
+     * Useful for attendance import when users need to know the mapping.
+     * 
+     * @param deviceId Optional device ID to filter by specific device
+     * @return List of employee code mappings with device code, system code, name, and device info
+     */
+    @GetMapping("/code-mapping")
+    public ResponseEntity<List<Map<String, Object>>> getCodeMapping(
+            @RequestParam(value = "deviceId", required = false) Long deviceId) {
+        
+        String tenantId = TenantContext.getTenantId();
+        List<Employee> employees;
+        
+        if (deviceId != null) {
+            // Filter by specific device
+            employees = deviceRepo.findById(deviceId)
+                    .filter(d -> d.getTenantId().equals(tenantId))
+                    .map(d -> service.list().stream()
+                            .filter(e -> e.getBiometricDevice() != null && 
+                                    e.getBiometricDevice().getId().equals(deviceId))
+                            .collect(java.util.stream.Collectors.toList()))
+                    .orElse(Collections.emptyList());
+        } else {
+            // Get all employees for tenant
+            employees = service.list();
+        }
+        
+        List<Map<String, Object>> mappings = new ArrayList<>();
+        for (Employee emp : employees) {
+            Map<String, Object> mapping = new LinkedHashMap<>();
+            mapping.put("employeeId", emp.getId());
+            mapping.put("systemCode", emp.getEmpCode());
+            mapping.put("deviceEmpCode", emp.getEffectiveDeviceEmpCode()); // Employee's code in the device
+            mapping.put("firstName", emp.getFirstName());
+            mapping.put("lastName", emp.getLastName());
+            mapping.put("fullName", emp.getFirstName() + 
+                    (emp.getLastName() != null ? " " + emp.getLastName() : ""));
+            
+            // Device information
+            if (emp.getBiometricDevice() != null) {
+                mapping.put("deviceId", emp.getBiometricDevice().getId());
+                mapping.put("deviceCode", emp.getBiometricDevice().getDeviceCode()); // Device's code/name
+                mapping.put("deviceName", emp.getBiometricDevice().getDeviceName());
+            } else {
+                mapping.put("deviceId", null);
+                mapping.put("deviceCode", null);
+                mapping.put("deviceName", "No Device Assigned");
+            }
+            
+            // Status
+            mapping.put("status", emp.getStatus() != null ? emp.getStatus().toString() : "ACTIVE");
+            
+            mappings.add(mapping);
+        }
+        
+        // Sort by system code for easier lookup
+        mappings.sort((a, b) -> {
+            String codeA = (String) a.get("systemCode");
+            String codeB = (String) b.get("systemCode");
+            if (codeA == null) return 1;
+            if (codeB == null) return -1;
+            return codeA.compareTo(codeB);
+        });
+        
+        return ResponseEntity.ok(mappings);
+    }
 }
